@@ -1271,3 +1271,99 @@ test('scoped catalog refresh calls only target category endpoints, omits seller-
   assert.equal(hitPaths.includes('/api/fruit-items'), false);
   assert.equal(hitPaths.includes('/api/seller-settlements'), false);
 });
+
+test('anti-DDoS shield blocks cross-origin writes, oversized URLs, scanner floods, asset proxy amplification, and login brute-force without bloating auditLog', async t => {
+  let upstreamAssetHits = 0;
+  const base = financeSource();
+  const server = await startTestServer(t, async (url, options = {}) => {
+    if (String(url).includes('/assets/playtogether/images/')) {
+      upstreamAssetHits += 1;
+      return { ok: false, status: 404, arrayBuffer: async () => Buffer.alloc(0) };
+    }
+    return base(url, options);
+  });
+
+  // 1. robots.txt + COOP/CORP headers
+  const robots = await fetch(`${server.base}/robots.txt`);
+  assert.equal(robots.status, 200);
+  assert.match(await robots.text(), /Disallow:\s*\//);
+  assert.equal(robots.headers.get('cross-origin-opener-policy'), 'same-origin');
+  assert.equal(robots.headers.get('cross-origin-resource-policy'), 'same-origin');
+
+  // 2. Oversized URL rejected with 414
+  const longRes = await fetch(`${server.base}/api/ping?x=${'a'.repeat(2100)}`);
+  assert.equal(longRes.status, 414);
+
+  // 3. Cross-origin POST rejected with 403
+  const csrfRes = await fetch(`${server.base}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: 'https://evil-competitor.example' },
+    body: JSON.stringify({ identifier: 'owner', password: 'owner-test-password' }),
+  });
+  assert.equal(csrfRes.status, 403);
+
+  // 4. Asset proxy negative cache prevents upstream amplification (5 requests for missing PNG -> only 1 upstream call!)
+  upstreamAssetHits = 0;
+  for (let i = 0; i < 5; i++) {
+    const r = await fetch(`${server.base}/assets/playtogether/images/missing_probe.png`);
+    assert.equal(r.status, 404);
+  }
+  assert.equal(upstreamAssetHits, 1);
+
+  // 5. Random missing asset flood is rate-limited at 30 misses/min (429 + Retry-After) without hitting upstream further
+  let throttled = 0;
+  for (let i = 0; i < 35; i++) {
+    const r = await fetch(`${server.base}/assets/playtogether/images/random_miss_${i}.png`);
+    if (r.status === 429) {
+      throttled += 1;
+      assert.ok(Number(r.headers.get('retry-after')) >= 1);
+    }
+  }
+  assert.ok(throttled >= 5, `Expected asset proxy miss flood to be throttled with 429, got ${throttled}`);
+  assert.ok(upstreamAssetHits <= 30, `Upstream asset fetches must stay capped <= 30, got ${upstreamAssetHits}`);
+
+  // 6. Login brute-force triggers per-account lockout (429) and never floods auditLog with 429/spam entries
+  const auditBefore = server.db.auditLog.length;
+  let got429 = false;
+  for (let i = 0; i < 14; i++) {
+    const r = await server.login('seller', 'wrong-password-123');
+    if (r.status === 429) got429 = true;
+  }
+  assert.equal(got429, true, 'Expected 429 lockout during login brute-force');
+  const auditDelta = server.db.auditLog.length - auditBefore;
+  assert.ok(auditDelta <= 4, `Audit log must be protected from login flood bloat (delta=${auditDelta})`);
+
+  // 7. Automated vulnerability scanner flood triggers automatic temporary IP ban (429)
+  let banned = false;
+  for (let i = 0; i < 10; i++) {
+    const r = await fetch(`${server.base}/wp-login.php?p=${i}`);
+    if (r.status === 429) banned = true;
+  }
+  assert.equal(banned, true, 'Expected scanner probe flood to trigger automatic IP ban');
+});
+
+test('CTV orders refresh burst guard coalesces rapid refresh=1 spam and handles null customer safely', async t => {
+  let orderHits = 0;
+  const base = financeSource();
+  const server = await startTestServer(t, async (url, options = {}) => {
+    const p = new URL(url).pathname;
+    if (p.includes('-orders')) {
+      orderHits += 1;
+      return { ok: true, status: 200, json: async () => ({ data: { data: [{ id: 88, status: 'assigned', completed_cnt: 5, customer: { nickname: 'SyncedName', suid: '999' } }] } }) };
+    }
+    return base(url, options);
+  }, {
+    seed(data) {
+      data.localOrders.push({ id: 'ord-null-cust', category: 'buff_tim', remoteOrderId: 88, status: 'pending', placedBy: { id: 'seller', role: 'ctv' }, customer: null, sellPrice: 15000 });
+    },
+  });
+  const seller = await server.login('seller', 'seller-test-password');
+  const first = await server.request('/api/orders?refresh=1', 'GET', seller.body.token);
+  assert.equal(first.status, 200);
+  assert.equal(first.body.orders[0].customer.nickname, 'SyncedName');
+  const hitsAfterFirst = orderHits;
+  // Immediate repeated refresh=1 within 2.5s burst guard reuses fresh cache (0 extra upstream calls!)
+  const burst = await server.request('/api/orders?refresh=1', 'GET', seller.body.token);
+  assert.equal(burst.status, 200);
+  assert.equal(orderHits, hitsAfterFirst);
+});

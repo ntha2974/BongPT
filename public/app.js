@@ -189,7 +189,8 @@ async function apiFetch(url, method = 'GET', body = null, timeoutMs = 0) {
     res = await fetch(url, opts);
   } catch (err) {
     if (err && err.name === 'AbortError') {
-      throw Object.assign(new Error('Đồng bộ bảng giá quá thời gian (quá 6.5 giây). Vui lòng bấm Thử lại.'), { code: 'TIMEOUT', status: 504 });
+      const sec = timeoutMs > 0 ? (timeoutMs / 1000).toFixed(1).replace(/\.0$/, '') : '6.5';
+      throw Object.assign(new Error(`Tải dữ liệu quá thời gian (quá ${sec} giây). Vui lòng bấm Thử lại.`), { code: 'TIMEOUT', status: 504 });
     }
     throw err;
   } finally {
@@ -524,7 +525,7 @@ function expandCompactFruitMutations(data, fallbackMutations = null) {
   }
 }
 
-async function loadCatalog(forceRefresh = false, scope = '', timeoutMs = 0) {
+async function loadCatalog(forceRefresh = false, scope = '', timeoutMs = 6500) {
   if (!state.user) return false;
   const requestToken = state.token;
   state.loadingCatalog = true;
@@ -596,12 +597,12 @@ async function loadCatalog(forceRefresh = false, scope = '', timeoutMs = 0) {
 // ============================================================================
 // LOAD ORDERS & ADMIN OVERVIEW
 // ============================================================================
-async function loadOrders(forceRefresh = false) {
+async function loadOrders(forceRefresh = false, timeoutMs = 6500) {
   if (!state.user) return false;
   const requestToken = state.token;
   state.loadingOrders = true;
   try {
-    const r = await apiFetch(`/api/orders?category=all${forceRefresh ? '&refresh=1' : ''}`);
+    const r = await apiFetch(`/api/orders?category=all${forceRefresh ? '&refresh=1' : ''}`, 'GET', null, timeoutMs);
     if (r.success && state.token === requestToken) {
       const nextOrders = r.orders || [];
       const sig = `${nextOrders.length}:${nextOrders.map(o => `${o.id}:${o.status}:${o.isActive}:${o.completedCnt}:${o.sendingCnt}:${o.failedCnt}:${o.cancelRequested ? 1 : 0}`).join('|')}`;
@@ -1194,10 +1195,16 @@ let catFilterTimer = null;
 function bindOrderCategoryPageEvents(catKey) {
   document.getElementById('btnRefreshCatPage')?.addEventListener('click', async () => {
     const btn = document.getElementById('btnRefreshCatPage');
+    if (btn?.disabled) return;
     if (btn) { btn.disabled = true; btn.textContent = '↻ Đang tải...'; }
     showToast('Đang đồng bộ dữ liệu mới nhất...');
-    await Promise.all([loadCatalog(true), loadOrders(true)]);
-    renderCurrentView();
+    try {
+      const scope = state.user?.role === 'admin' ? '' : (catKey === 'fruit_coin' ? 'fruit_all' : catKey);
+      await Promise.all([loadCatalog(true, scope, 6500), loadOrders(true, 6500)]);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '↻ Làm mới'; }
+      renderCurrentView();
+    }
   });
 
   document.getElementById('btnOpenAddOrderModal')?.addEventListener('click', () => {
@@ -2578,6 +2585,20 @@ async function openWeatherConfigModal(order) {
 // ============================================================================
 // 3. MODALS: FRUIT WAREHOUSE, COIN WAREHOUSE, CATEGORY PRICE LIST
 // ============================================================================
+let infoModalSeq = 0;
+
+function renderModalSyncErrorHtml(body, retryFn, customMsg = '') {
+  body.innerHTML = `
+    <div class="sync-loading-screen" style="padding:28px 16px;">
+      <div style="font-size:28px;">⚠️</div>
+      <div class="sync-loading-title" style="color:#ab334a;">Không thể tải dữ liệu mới nhất từ ebongiu</div>
+      <div class="sync-loading-sub">${escapeHtml(customMsg || state.catalogWarning || 'Hệ thống nguồn tạm thời phản hồi chậm. Vui lòng thử tải lại.')}</div>
+      <button type="button" class="btn-violet" id="btnRetryInfoModalSync">↻ Thử tải lại</button>
+    </div>
+  `;
+  body.querySelector('#btnRetryInfoModalSync')?.addEventListener('click', retryFn);
+}
+
 async function openFruitWarehouseModal() {
   const overlay = document.getElementById('appModalOverlay');
   const box = document.getElementById('appModalBox');
@@ -2585,13 +2606,18 @@ async function openFruitWarehouseModal() {
   const body = document.getElementById('appModalBody');
   if (!overlay || !box || !title || !body) return;
 
+  const mySeq = ++infoModalSeq;
   box.className = 'modal-box wide';
   title.textContent = '📦 Kho Trái Cây Trực Tuyến';
   body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ ebongiu...', 'Đang lấy tồn kho & đơn giá trái cây mới nhất từ hệ thống.');
   overlay.style.display = 'flex';
 
   await loadCatalog(true, 'fruit_by_fruit', 6500);
-  if (overlay.style.display === 'none' || !state.catalogData) return;
+  if (mySeq !== infoModalSeq || overlay.style.display === 'none' || !state.user) return;
+  if (!state.catalogData || state.catalogWarning) {
+    renderModalSyncErrorHtml(body, openFruitWarehouseModal);
+    return;
+  }
 
   const fruits = (state.catalogData.catalog?.fruit_by_fruit || [])
     .slice()
@@ -2650,13 +2676,18 @@ async function openCoinWarehouseModal() {
   const body = document.getElementById('appModalBody');
   if (!overlay || !box || !title || !body) return;
 
+  const mySeq = ++infoModalSeq;
   box.className = 'modal-box';
   title.textContent = '🪙 Kho Xu Nông Trại Trực Tuyến';
   body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ ebongiu...', 'Đang đồng bộ trữ lượng Kho Xu mới nhất từ hệ thống.');
   overlay.style.display = 'flex';
 
   await loadCatalog(true, 'fruit_coin', 6500);
-  if (overlay.style.display === 'none' || !state.catalogData) return;
+  if (mySeq !== infoModalSeq || overlay.style.display === 'none' || !state.user) return;
+  if (!state.catalogData || state.catalogWarning) {
+    renderModalSyncErrorHtml(body, openCoinWarehouseModal);
+    return;
+  }
 
   const coin = state.catalogData.coinStock || {};
   const tiers = state.catalogData.coinTiers || [];
@@ -2701,13 +2732,18 @@ async function openCategoryPriceListModal(catKey) {
   const body = document.getElementById('appModalBody');
   if (!overlay || !box || !title || !body) return;
 
+  const mySeq = ++infoModalSeq;
   box.className = 'modal-box';
   title.textContent = `🏷️ Bảng giá: ${VIEW_TITLES[catKey] || catKey}`;
   body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ ebongiu...');
   overlay.style.display = 'flex';
 
   await loadCatalog(true, catKey, 6500);
-  if (overlay.style.display === 'none' || !state.catalogData) return;
+  if (mySeq !== infoModalSeq || overlay.style.display === 'none' || !state.user) return;
+  if (!state.catalogData || state.catalogWarning) {
+    renderModalSyncErrorHtml(body, () => openCategoryPriceListModal(catKey));
+    return;
+  }
 
   const items = state.catalogData.catalog?.[catKey] || [];
   const isGiftCat = catKey === 'farm_gift' || catKey === 'mail_gift';

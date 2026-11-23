@@ -30,6 +30,8 @@ app.use((req, res, next) => {
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
   res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' https: data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'");
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   if (req.secure || req.headers['x-forwarded-proto'] === 'https') {
@@ -37,6 +39,145 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+// ============================================================================
+// ANTI-DDOS, SCANNER FIREWALL & BOUNDED-MEMORY RATE LIMITERS
+// ============================================================================
+const ALLOWED_HTTP_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
+const SCANNER_PATH_RE = /(?:^|\/)(?:wp-admin|wp-login|wp-content|wp-includes|xmlrpc\.php|phpmyadmin|pma|adminer|cgi-bin|actuator|\.aws|\.kube|vendor\/phpunit|boaform|HNAP1)(?:\/|$|\?)|\.php(?:$|\?)|(?:^|\/)\.(?:env|git)(?:\/|$)/i;
+
+function getClientIp(req) {
+  const raw = String(req.ip || req.socket?.remoteAddress || 'unknown').trim();
+  return raw.startsWith('::ffff:') ? raw.slice(7) : raw;
+}
+
+function createWindowCounter(maxEntries = 10000) {
+  const store = new Map();
+  function prune(now) {
+    if (store.size < maxEntries) return;
+    for (const [k, v] of store) {
+      if (now >= v.resetAt) store.delete(k);
+    }
+    while (store.size >= maxEntries) {
+      store.delete(store.keys().next().value);
+    }
+  }
+  return {
+    hit(key, windowMs, limit, weight = 1) {
+      const now = Date.now();
+      prune(now);
+      let entry = store.get(key);
+      if (!entry || now >= entry.resetAt) {
+        entry = { count: 0, resetAt: now + windowMs };
+      }
+      entry.count += weight;
+      store.set(key, entry);
+      return {
+        allowed: entry.count <= limit,
+        count: entry.count,
+        retryAfterSec: Math.max(1, Math.ceil((entry.resetAt - now) / 1000)),
+      };
+    },
+    peek(key) {
+      const now = Date.now();
+      const entry = store.get(key);
+      if (!entry || now >= entry.resetAt) return null;
+      return entry;
+    },
+    clear(key) {
+      store.delete(key);
+    },
+  };
+}
+
+const globalIpLimiter = createWindowCounter(10000);
+const pingIpLimiter = createWindowCounter(10000);
+const abuseStrikeCounter = createWindowCounter(10000);
+const ipTempBan = new Map();
+const loginIpLimiter = createWindowCounter(10000);
+const loginAccountFailures = createWindowCounter(10000);
+const loginAuditThrottle = createWindowCounter(10000);
+const assetMissIpLimiter = createWindowCounter(10000);
+const refreshUserLimiter = createWindowCounter(5000);
+const settlementUserLimiter = createWindowCounter(5000);
+
+function recordAbuseStrike(ip, weight = 1) {
+  const res = abuseStrikeCounter.hit(ip, 120000, 40, weight);
+  if (!res.allowed) {
+    const now = Date.now();
+    if (ipTempBan.size >= 10000) {
+      for (const [k, until] of ipTempBan) if (now >= until) ipTempBan.delete(k);
+      if (ipTempBan.size >= 10000) ipTempBan.delete(ipTempBan.keys().next().value);
+    }
+    ipTempBan.set(ip, now + 5 * 60 * 1000);
+  }
+}
+
+function sendRateLimited(res, retryAfterSec, message = 'Quá nhiều yêu cầu từ kết nối của bạn. Vui lòng thử lại sau ít phút.') {
+  res.setHeader('Retry-After', String(Math.max(1, Number(retryAfterSec) || 60)));
+  return res.status(429).json({ success: false, code: 'RATE_LIMITED', message });
+}
+
+app.use((req, res, next) => {
+  if (!ALLOWED_HTTP_METHODS.has(req.method)) {
+    return res.status(405).json({ success: false, message: 'Phương thức HTTP không được hỗ trợ.' });
+  }
+  if (String(req.originalUrl || req.url || '').length > 2048) {
+    return res.status(414).json({ success: false, message: 'Đường dẫn yêu cầu quá dài.' });
+  }
+  if (req.path === '/robots.txt' && (req.method === 'GET' || req.method === 'HEAD')) {
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    return res.send('User-agent: *\nDisallow: /\n');
+  }
+
+  const ip = getClientIp(req);
+  const now = Date.now();
+  const banUntil = ipTempBan.get(ip);
+  if (banUntil) {
+    if (now < banUntil) {
+      return sendRateLimited(res, Math.ceil((banUntil - now) / 1000), 'Địa chỉ mạng đang bị tạm chặn do gửi quá nhiều yêu cầu bất thường.');
+    }
+    ipTempBan.delete(ip);
+  }
+
+  if (SCANNER_PATH_RE.test(req.path)) {
+    recordAbuseStrike(ip, 5);
+    return res.status(404).end();
+  }
+
+  const isLightProbe = (req.path === '/api/ping' || req.path === '/api/health') && (req.method === 'GET' || req.method === 'HEAD');
+  if (isLightProbe) {
+    const pHit = pingIpLimiter.hit(ip, 60000, 300);
+    if (!pHit.allowed) return sendRateLimited(res, pHit.retryAfterSec);
+  } else {
+    const gHit = globalIpLimiter.hit(ip, 60000, 240);
+    if (!gHit.allowed) {
+      recordAbuseStrike(ip, 3);
+      return sendRateLimited(res, gHit.retryAfterSec);
+    }
+  }
+
+  // Block cross-origin browser state-changing API requests (CSRF / automated cross-site abuse)
+  if (req.path.startsWith('/api/') && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+    const origin = req.headers.origin;
+    if (typeof origin === 'string' && origin.trim() && origin !== 'null') {
+      try {
+        const originHost = new URL(origin).host.toLowerCase();
+        const reqHost = String((process.env.RENDER === 'true' ? req.headers['x-forwarded-host'] : '') || req.headers.host || '').split(',')[0].trim().toLowerCase();
+        if (reqHost && originHost !== reqHost) {
+          recordAbuseStrike(ip, 5);
+          return res.status(403).json({ success: false, message: 'Nguồn gốc yêu cầu không hợp lệ.' });
+        }
+      } catch {
+        recordAbuseStrike(ip, 5);
+        return res.status(403).json({ success: false, message: 'Nguồn gốc yêu cầu không hợp lệ.' });
+      }
+    }
+  }
+  next();
+});
+
 app.use((req, res, next) => {
   if (req.path === '/api/admin/backup/import') return next();
   return express.json({ limit: '256kb' })(req, res, next);
@@ -74,7 +215,7 @@ app.use('/api', (req, res, next) => {
   res.json = body => {
     const actor = req.user || req.auditUser;
     const isMutation = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method);
-    const recordActivity = Boolean(actor && isMutation);
+    const recordActivity = Boolean(actor && isMutation && res.statusCode !== 429 && !req.skipAudit);
     let committed = null;
     if (recordActivity) {
       pushAuditRecord(actor, `${req.method} ${req.path}`, { status: res.statusCode, ...req.auditDetails });
@@ -238,6 +379,9 @@ function hashPasswordAsync(plain) {
   });
 }
 
+let activeScryptOps = 0;
+const MAX_CONCURRENT_SCRYPT = 6;
+
 function verifyPasswordAsync(plain, stored) {
   const p = String(plain || '');
   const st = String(stored || '');
@@ -249,8 +393,13 @@ function verifyPasswordAsync(plain, stored) {
   if (parts.length !== 3) return Promise.resolve(false);
   const [, salt, hashHex] = parts;
   const expected = Buffer.from(hashHex, 'hex');
+  if (activeScryptOps >= MAX_CONCURRENT_SCRYPT) {
+    return Promise.reject(Object.assign(new Error('Hệ thống đang bận xác thực. Vui lòng thử lại sau vài giây.'), { status: 503 }));
+  }
+  activeScryptOps += 1;
   return new Promise((resolve, reject) => {
     crypto.scrypt(p, salt, 64, (err, derived) => {
+      activeScryptOps = Math.max(0, activeScryptOps - 1);
       if (err) reject(err);
       else if (derived.length !== expected.length) resolve(false);
       else resolve(crypto.timingSafeEqual(derived, expected));
@@ -258,21 +407,8 @@ function verifyPasswordAsync(plain, stored) {
   });
 }
 
-const loginAttempts = new Map();
 function checkLoginRateLimit(ip) {
-  const now = Date.now();
-  if (loginAttempts.size > 1000) {
-    for (const [k, v] of loginAttempts) if (now > v.resetAt) loginAttempts.delete(k);
-    if (loginAttempts.size > 1000) loginAttempts.delete(loginAttempts.keys().next().value);
-  }
-  const entry = loginAttempts.get(ip) || { count: 0, resetAt: now + 60000 };
-  if (now > entry.resetAt) {
-    entry.count = 0;
-    entry.resetAt = now + 60000;
-  }
-  entry.count += 1;
-  loginAttempts.set(ip, entry);
-  return entry.count <= 25;
+  return loginIpLimiter.hit(ip, 60000, 15);
 }
 
 // ============================================================================
@@ -942,15 +1078,15 @@ function upstreamSuccess() {
   Object.assign(upstreamStatus, { connected: true, lastCheckedAt: new Date().toISOString(), lastError: '' });
 }
 
-async function fetchHoanNguyen(url, options = {}, timeoutMs = 15000) {
+async function fetchHoanNguyen(url, options = {}, timeoutMs = 6000) {
   try {
-    return await fetch(url, { ...options, signal: AbortSignal.timeout(timeoutMs) });
+    return await fetch(url, { ...options, signal: AbortSignal.timeout(Math.max(1000, timeoutMs)) });
   } catch (error) {
     throw upstreamFailure(error);
   }
 }
 
-async function loginToHoanNguyen(force = false) {
+async function loginToHoanNguyen(force = false, timeoutMs = 5000) {
   const hn = db.settings.hoanNguyen;
   if (!force && hn.token) return hn.token;
   if (loginPromise) return loginPromise;
@@ -971,7 +1107,7 @@ async function loginToHoanNguyen(force = false) {
           email: hn.email,
           password: hn.password,
         }),
-      });
+      }, timeoutMs);
       const data = await res.json();
       if (!res.ok || !data.token) {
         throw new Error(data.message || 'Không thể đăng nhập hệ thống nguồn');
@@ -992,9 +1128,11 @@ async function loginToHoanNguyen(force = false) {
   return loginPromise;
 }
 
-async function hnApiCall(apiPath, method = 'GET', body = null, retry = true, timeoutMs = 15000) {
+async function hnApiCall(apiPath, method = 'GET', body = null, retry = true, timeoutMs = 6000) {
+  const deadline = Date.now() + Math.max(1500, timeoutMs);
+  const remainingMs = () => Math.max(1000, deadline - Date.now());
   const hn = db.settings.hoanNguyen;
-  const token = await loginToHoanNguyen(false);
+  const token = await loginToHoanNguyen(false, Math.min(5000, remainingMs()));
 
   const headers = {
     'Accept': 'application/json',
@@ -1008,10 +1146,10 @@ async function hnApiCall(apiPath, method = 'GET', body = null, retry = true, tim
     options.body = JSON.stringify(body);
   }
 
-  const res = await fetchHoanNguyen(`${hn.baseUrl}${apiPath}`, options, timeoutMs);
+  const res = await fetchHoanNguyen(`${hn.baseUrl}${apiPath}`, options, remainingMs());
   if (res.status === 401 && retry) {
-    if (db.settings.hoanNguyen.token === token) await loginToHoanNguyen(true);
-    return hnApiCall(apiPath, method, body, false, timeoutMs);
+    if (db.settings.hoanNguyen.token === token) await loginToHoanNguyen(true, Math.min(4500, remainingMs()));
+    return hnApiCall(apiPath, method, body, false, remainingMs());
   }
 
   let data;
@@ -1033,11 +1171,34 @@ async function hnApiCall(apiPath, method = 'GET', body = null, retry = true, tim
 // ============================================================================
 // WEBSOCKET HELPER FOR IN-GAME PLAYER SEARCH & PROFILE DETAIL
 // ============================================================================
-function searchInGameByWebSocket(nickname, timeoutMs = 12000) {
+let activeWsTotal = 0;
+const activeWsByUser = new Map();
+const MAX_WS_GLOBAL = 10;
+const MAX_WS_PER_USER = 2;
+
+async function withWsSlot(userId, fn) {
+  const uid = String(userId || 'anon');
+  const cur = activeWsByUser.get(uid) || 0;
+  if (cur >= MAX_WS_PER_USER || activeWsTotal >= MAX_WS_GLOBAL) {
+    throw Object.assign(new Error('Đang có quá nhiều lượt tìm kiếm đồng thời. Vui lòng đợi vài giây rồi thử lại.'), { status: 429 });
+  }
+  activeWsTotal += 1;
+  activeWsByUser.set(uid, cur + 1);
+  try {
+    return await fn();
+  } finally {
+    activeWsTotal = Math.max(0, activeWsTotal - 1);
+    const next = (activeWsByUser.get(uid) || 1) - 1;
+    if (next <= 0) activeWsByUser.delete(uid);
+    else activeWsByUser.set(uid, next);
+  }
+}
+
+function searchInGameByWebSocket(nickname, timeoutMs = 6000) {
   return new Promise(async (resolve, reject) => {
     try {
-      await loginToHoanNguyen(false);
-      if (!db.settings.hoanNguyen.user?.id) await loginToHoanNguyen(true);
+      await loginToHoanNguyen(false, 4000);
+      if (!db.settings.hoanNguyen.user?.id) await loginToHoanNguyen(true, 4000);
     } catch (error) { reject(error); return; }
     const userId = db.settings.hoanNguyen.user?.id;
     if (!userId) { reject(new Error('Nguồn chưa xác nhận tài khoản tìm kiếm. Liên hệ admin.')); return; }
@@ -1090,10 +1251,18 @@ function searchInGameByWebSocket(nickname, timeoutMs = 12000) {
         reject(new Error('Không thể kết nối máy chủ tìm kiếm game'));
       }
     };
+
+    ws.onclose = () => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(new Error('Kết nối máy chủ tìm kiếm game bị gián đoạn'));
+      }
+    };
   });
 }
 
-function requestProfileDetailByWebSocket(suid, timeoutMs = 12000) {
+function requestProfileDetailByWebSocket(suid, timeoutMs = 3500) {
   return new Promise((resolve, reject) => {
     const wsUrl = 'wss://hoannguyenplaytogether.com/api/ws/connect?platform=web&view=seller-fruit-coin-orders';
     const ws = new WebSocket(wsUrl);
@@ -1141,6 +1310,14 @@ function requestProfileDetailByWebSocket(suid, timeoutMs = 12000) {
         clearTimeout(timer);
         try { ws.close(); } catch {}
         reject(new Error('Lỗi kết nối khi lấy chi tiết hồ sơ'));
+      }
+    };
+
+    ws.onclose = () => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(new Error('Kết nối hồ sơ game bị gián đoạn'));
       }
     };
   });
@@ -1208,13 +1385,44 @@ function sanitizeUser(u) {
 }
 
 // ============================================================================
-// PLAY TOGETHER ASSET PROXY (SERVER-SIDE CACHED — NEVER LEAKS UPSTREAM DOMAIN!)
+// PLAY TOGETHER ASSET PROXY (SERVER-SIDE CACHED + ANTI-AMPLIFICATION SHIELD!)
 // ============================================================================
 const assetProxyCache = new Map();
+let assetProxyBytes = 0;
+const ASSET_PROXY_MAX_ENTRIES = 300;
+const ASSET_PROXY_MAX_BYTES = 25 * 1024 * 1024;
+const assetProxyMissCache = new Map();
+const assetProxyPending = new Map();
+let activeAssetFetches = 0;
+const MAX_CONCURRENT_ASSET_FETCHES = 6;
 const SAFE_ASSET_PATH = /^\/assets\/playtogether\/images\/[A-Za-z0-9_./-]+\.png$/;
+
+function cacheAssetProxyBuffer(assetPath, buf) {
+  while (
+    assetProxyCache.size >= ASSET_PROXY_MAX_ENTRIES ||
+    (assetProxyBytes + buf.length > ASSET_PROXY_MAX_BYTES && assetProxyCache.size > 0)
+  ) {
+    const oldestKey = assetProxyCache.keys().next().value;
+    const oldestBuf = assetProxyCache.get(oldestKey);
+    assetProxyCache.delete(oldestKey);
+    assetProxyBytes = Math.max(0, assetProxyBytes - (oldestBuf?.length || 0));
+  }
+  assetProxyCache.set(assetPath, buf);
+  assetProxyBytes += buf.length;
+}
+
+function cacheAssetMiss(assetPath) {
+  const now = Date.now();
+  if (assetProxyMissCache.size >= 2000) {
+    for (const [k, until] of assetProxyMissCache) if (now >= until) assetProxyMissCache.delete(k);
+    if (assetProxyMissCache.size >= 2000) assetProxyMissCache.delete(assetProxyMissCache.keys().next().value);
+  }
+  assetProxyMissCache.set(assetPath, now + 5 * 60 * 1000);
+}
+
 app.get('/assets/playtogether/*', async (req, res) => {
   const assetPath = req.path;
-  if (!SAFE_ASSET_PATH.test(assetPath) || assetPath.includes('..')) {
+  if (!SAFE_ASSET_PATH.test(assetPath) || assetPath.includes('..') || assetPath.length > 220) {
     return res.status(404).end();
   }
   const cached = assetProxyCache.get(assetPath);
@@ -1223,15 +1431,50 @@ app.get('/assets/playtogether/*', async (req, res) => {
     res.setHeader('Cache-Control', 'public, max-age=604800');
     return res.send(cached);
   }
+  const missUntil = assetProxyMissCache.get(assetPath);
+  if (missUntil && Date.now() < missUntil) {
+    return res.status(404).end();
+  }
+  const ip = getClientIp(req);
+  const missLimit = assetMissIpLimiter.hit(ip, 60000, 30);
+  if (!missLimit.allowed) {
+    res.setHeader('Retry-After', String(missLimit.retryAfterSec));
+    return res.status(429).end();
+  }
   try {
-    const baseUrl = db.settings.hoanNguyen?.baseUrl || 'https://hoannguyenplaytogether.com';
-    const upstream = await fetch(`${baseUrl}${assetPath}`, { signal: AbortSignal.timeout(8000) });
-    if (!upstream.ok) return res.status(404).end();
-    const buf = Buffer.from(await upstream.arrayBuffer());
-    const isPng = buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
-    if (!isPng || buf.length > 512 * 1024) return res.status(404).end();
-    if (assetProxyCache.size >= 300) assetProxyCache.delete(assetProxyCache.keys().next().value);
-    assetProxyCache.set(assetPath, buf);
+    let pending = assetProxyPending.get(assetPath);
+    if (!pending) {
+      if (activeAssetFetches >= MAX_CONCURRENT_ASSET_FETCHES) {
+        return res.status(503).end();
+      }
+      activeAssetFetches += 1;
+      pending = (async () => {
+        try {
+          const baseUrl = db.settings.hoanNguyen?.baseUrl || 'https://hoannguyenplaytogether.com';
+          const upstream = await fetch(`${baseUrl}${assetPath}`, { signal: AbortSignal.timeout(5000) });
+          if (!upstream.ok) {
+            cacheAssetMiss(assetPath);
+            return null;
+          }
+          const buf = Buffer.from(await upstream.arrayBuffer());
+          const isPng = buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+          if (!isPng || buf.length > 512 * 1024) {
+            cacheAssetMiss(assetPath);
+            return null;
+          }
+          cacheAssetProxyBuffer(assetPath, buf);
+          return buf;
+        } catch {
+          return null;
+        } finally {
+          activeAssetFetches = Math.max(0, activeAssetFetches - 1);
+          assetProxyPending.delete(assetPath);
+        }
+      })();
+      assetProxyPending.set(assetPath, pending);
+    }
+    const buf = await pending;
+    if (!buf) return res.status(404).end();
     res.setHeader('Content-Type', 'image/png');
     res.setHeader('Cache-Control', 'public, max-age=604800');
     res.send(buf);
@@ -1262,20 +1505,28 @@ app.get('/api/health', (req, res) => {
 });
 
 app.post('/api/auth/login', asyncRoute(async (req, res) => {
-  req.auditUser = { id: 'anonymous', name: 'Đăng nhập chưa xác thực', role: 'unauthenticated' };
-  const ip = req.ip || req.socket?.remoteAddress || 'unknown';
-  if (!checkLoginRateLimit(ip)) {
-    return res.status(429).json({
-      success: false,
-      message: 'Bạn đã thử đăng nhập quá nhiều lần. Vui lòng đợi 1 phút rồi thử lại.',
-    });
+  const ip = getClientIp(req);
+  const ipLimit = checkLoginRateLimit(ip);
+  if (!ipLimit.allowed) {
+    req.skipAudit = true;
+    recordAbuseStrike(ip, 4);
+    return sendRateLimited(res, ipLimit.retryAfterSec, 'Bạn đã thử đăng nhập quá nhiều lần. Vui lòng đợi 1 phút rồi thử lại.');
   }
 
   const { identifier, email, username, password } = req.body || {};
   const loginKey = String(identifier || email || username || '').trim().toLowerCase();
   const pwd = String(password || '');
   if (!loginKey || loginKey.length > 254 || !pwd || pwd.length > 128 || !storageHealthy) {
+    req.skipAudit = true;
     return res.status(storageHealthy ? 401 : 503).json({ success: false, message: 'Không thể đăng nhập. Kiểm tra thông tin hoặc liên hệ admin.' });
+  }
+
+  // Account-level brute-force protection BEFORE running CPU-heavy scrypt (stops distributed botnets)
+  const acctFailures = loginAccountFailures.peek(loginKey);
+  if (acctFailures && acctFailures.count >= 10) {
+    req.skipAudit = true;
+    const retryAfterSec = Math.max(1, Math.ceil((acctFailures.resetAt - Date.now()) / 1000));
+    return sendRateLimited(res, retryAfterSec, 'Tài khoản tạm bị khóa đăng nhập do nhập sai quá nhiều lần. Vui lòng thử lại sau ít phút.');
   }
 
   const user = db.users.find(
@@ -1283,11 +1534,21 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
   );
 
   if (!user || !(await verifyPasswordAsync(pwd, user.password))) {
+    loginAccountFailures.hit(loginKey, 10 * 60 * 1000, 10);
+    recordAbuseStrike(ip, 2);
+    // Only persist first 3 failed-login audit entries per IP/minute so attackers cannot flood auditLog/DB
+    const auditAllowed = loginAuditThrottle.hit(ip, 60000, 3).allowed;
+    if (auditAllowed) {
+      req.auditUser = { id: 'anonymous', name: 'Đăng nhập chưa xác thực', role: 'unauthenticated' };
+    } else {
+      req.skipAudit = true;
+    }
     return res.status(401).json({
       success: false,
       message: 'Tài khoản hoặc mật khẩu không chính xác.',
     });
   }
+  loginAccountFailures.clear(loginKey);
 
   if (user.isLocked) {
     return res.status(403).json({
@@ -1522,6 +1783,14 @@ async function fetchRawCatalogFromHoanNguyen(force = false, maxAgeMs = CTV_CATAL
   if (!force && catalogCache.raw && age < maxAgeMs && (!includeAdminWeeklyLimit || catalogCache.hasWeeklyLimit)) {
     return catalogCache.raw;
   }
+  // Stale-While-Revalidate for passive browsing (!force): return warm RAM cache immediately (<15ms)
+  // and refresh in background so initial loads / tab switches NEVER wait > 7s.
+  if (!force && catalogCache.raw && (!includeAdminWeeklyLimit || catalogCache.hasWeeklyLimit)) {
+    if (!catalogPromise) {
+      catalogPromise = buildRawCatalogFromHoanNguyen(true, opts).catch(() => {}).finally(() => { catalogPromise = null; });
+    }
+    return catalogCache.raw;
+  }
   if (catalogPromise) return catalogPromise;
   catalogPromise = buildRawCatalogFromHoanNguyen(true, opts);
   try { return await catalogPromise; }
@@ -1531,7 +1800,7 @@ async function fetchRawCatalogFromHoanNguyen(force = false, maxAgeMs = CTV_CATAL
 async function buildRawCatalogFromHoanNguyen(force = false, opts = {}) {
   const now = Date.now();
   const includeAdminWeeklyLimit = opts.includeAdminWeeklyLimit !== false;
-  const timeoutMs = opts.timeoutMs || 15000;
+  const timeoutMs = opts.timeoutMs || 5500;
   if (!force && catalogCache.raw && now - catalogCache.timestamp < ADMIN_CATALOG_FRESH_MS && (!includeAdminWeeklyLimit || catalogCache.hasWeeklyLimit)) {
     return catalogCache.raw;
   }
@@ -1709,9 +1978,16 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
       ? Math.max(catalogScopeTimestamps.get(scope) || 0, catalogCache.timestamp || 0)
       : catalogCache.timestamp;
 
-    // Pre-order / manual refresh (?refresh=1): ALWAYS fetch live from HoanNguyen (deduplicated, 1.5s burst guard for CTV, hard 5.5s deadline for fast CTV UX!).
-    const force = req.query.refresh === '1' && (isAdmin || now - lastScopeTs > 1500);
-    const timeoutMs = !isAdmin && req.query.refresh === '1' ? 5500 : 12000;
+    // Pre-order / manual refresh (?refresh=1): ALWAYS fetch live from HoanNguyen (deduplicated, 1.5s burst guard for CTV, hard 5.5s deadline < 7s!).
+    const wantRefresh = req.query.refresh === '1';
+    if (wantRefresh && !isAdmin) {
+      const rLimit = refreshUserLimiter.hit(`cat:${user.id}`, 60000, 25);
+      if (!rLimit.allowed) {
+        return sendRateLimited(res, rLimit.retryAfterSec, 'Bạn đang làm mới bảng giá quá nhanh. Vui lòng đợi ít giây.');
+      }
+    }
+    const force = wantRefresh && (isAdmin || now - lastScopeTs > 1500);
+    const timeoutMs = 5500;
 
     const raw = scope
       ? await fetchScopedCatalogFromHoanNguyen(scope, { force, maxAgeMs, timeoutMs })
@@ -1936,7 +2212,7 @@ app.post('/api/catalog/preview-fruit', requireAuth, limitInteractive, async (req
       fruit_item_id: Number(fruit_item_id),
       total_cnt: qty,
       mutation_list: muts,
-    });
+    }, true, 5500);
 
     const costPrice = Number(previewRes?.data?.total_price ?? 0);
     const sellPrice = calculateFruitOrderSellingPrice(fi, qty, muts);
@@ -1985,7 +2261,7 @@ app.post('/api/customer/search-ingame', requireAuth, limitInteractive, async (re
     if (typeof nickname !== 'string' || !nickname.trim() || nickname.length > 80) {
       return res.status(400).json({ success: false, message: 'Vui lòng nhập tên nhân vật cần tìm.' });
     }
-    const profiles = (await searchInGameByWebSocket(nickname.trim())).slice(0, 100).map(p => ({
+    const profiles = (await withWsSlot(req.user.id, () => searchInGameByWebSocket(nickname.trim(), 6000))).slice(0, 100).map(p => ({
       suid: String(p.suid || ''), Nickname: String(p.Nickname || p.nickname || '').slice(0, 100),
       Region: String(p.Region || 'vn1'), RegionName: String(p.RegionName || ''),
       AchievementLevel: Math.max(0, Number(p.AchievementLevel) || 0),
@@ -2020,7 +2296,7 @@ app.post('/api/customer/select-ingame', requireAuth, limitInteractive, async (re
 
     let detail = null;
     try {
-      detail = await requestProfileDetailByWebSocket(profile.suid, 10000);
+      detail = await withWsSlot(req.user.id, () => requestProfileDetailByWebSocket(profile.suid, 3500));
     } catch {}
 
     const payload = {
@@ -2038,7 +2314,7 @@ app.post('/api/customer/select-ingame', requireAuth, limitInteractive, async (re
       follower_count: Number(detail?.Profile?.FollowerCount ?? 0),
     };
 
-    const saveRes = await hnApiCall('/api/game-profiles', 'POST', payload);
+    const saveRes = await hnApiCall('/api/game-profiles', 'POST', payload, true, 5000);
     if (!saveRes?.success || !saveRes?.data) {
       throw new Error(saveRes?.message || 'Không thể lưu hồ sơ khách hàng.');
     }
@@ -2072,7 +2348,7 @@ app.post('/api/customer/resolve-role-id', requireAuth, limitInteractive, async (
     }
     const r = await hnApiCall('/api/customers/resolve-by-role-id', 'POST', {
       role_id: String(role_id).trim(),
-    });
+    }, true, 5500);
     const cust = r?.data;
     if (!cust?.id) {
       return res.status(404).json({ success: false, message: 'Role ID không hợp lệ hoặc không tìm thấy.' });
@@ -2209,7 +2485,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
         Number(selection.customer.gameProfileId || 0) !== Number(game_profile_id || 0))) {
       return res.status(403).json({ success: false, message: 'Vui lòng tìm và chọn lại nhân vật bằng tài khoản của bạn trước khi đặt đơn.' });
     }
-    const rawCatalog = await fetchScopedCatalogFromHoanNguyen(category, { force: true, timeoutMs: 8000 });
+    const rawCatalog = await fetchScopedCatalogFromHoanNguyen(category, { force: true, timeoutMs: 5500 });
 
     // Check if the category is currently active on HoanNguyen
     const isSendTask = enabled(rawCatalog.hnSettings?.is_send_task);
@@ -2638,11 +2914,12 @@ async function loadRemoteOrders(force = false) {
 }
 
 async function fetchRemoteOrderPages(cache) {
-  const responses = await Promise.allSettled(orderPaths.map(path => hnApiCall(path)));
+  const responses = await Promise.allSettled(orderPaths.map(path => hnApiCall(path, 'GET', null, true, 5000)));
   const partial = responses.some(r => r.status === 'rejected');
   const pages = responses.map((r, i) => r.status === 'fulfilled' ? r.value : cache.result?.pages[i]);
   cache.result = { pages, partial };
   const finishedAt = Date.now();
+  cache.fetchedAt = finishedAt;
   cache.until = finishedAt + (partial ? 2000 : ORDER_FRESH_MS);
   cache.staleUntil = finishedAt + (partial ? 5000 : ORDER_STALE_MS);
   return cache.result;
@@ -2653,7 +2930,14 @@ app.get('/api/orders', requireAuth, async (req, res) => {
     const user = req.user;
     const isAdmin = user.role === 'admin';
     const categoryFilter = req.query.category || 'all';
-    const force = req.query.refresh === '1';
+    const wantRefresh = req.query.refresh === '1';
+    if (wantRefresh && !isAdmin) {
+      const rLimit = refreshUserLimiter.hit(`ord:${user.id}`, 60000, 25);
+      if (!rLimit.allowed) {
+        return sendRateLimited(res, rLimit.retryAfterSec, 'Bạn đang làm mới đơn hàng quá nhanh. Vui lòng đợi ít giây.');
+      }
+    }
+    const force = wantRefresh && (isAdmin || !orderCache.result || Date.now() - (orderCache.fetchedAt || 0) > 2500);
 
     if (!isAdmin && !db.localOrders.some(order => order.placedBy?.id === user.id)) {
       return res.json({ success: true, orders: [], partial: false });
@@ -2723,6 +3007,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
                 }
               : { customerId: null, gameProfileId: null, nickname: 'Chưa gán khách', suid: '' };
           } else if (rem.customer) {
+            if (!lo.customer || typeof lo.customer !== 'object') lo.customer = {};
             lo.customer.nickname = rem.customer.nickname || lo.customer.nickname;
             lo.customer.suid = rem.customer.suid || lo.customer.suid;
           }
@@ -3274,10 +3559,14 @@ app.get('/api/settlements', requireAuth, async (req, res) => {
   try {
     const user = req.user;
     const isAdmin = user.role === 'admin';
+    if (!isAdmin) {
+      const sLimit = settlementUserLimiter.hit(user.id, 60000, 45);
+      if (!sLimit.allowed) return sendRateLimited(res, sLimit.retryAfterSec);
+    }
     const weekStart = String(req.query.week_start || getCurrentMondayStr());
 
     if (isAdmin) {
-      const hnSettle = await hnApiCall(`/api/seller-settlements?week_start=${encodeURIComponent(weekStart)}`).catch(
+      const hnSettle = await hnApiCall(`/api/seller-settlements?week_start=${encodeURIComponent(weekStart)}`, 'GET', null, true, 5500).catch(
         () => ({ data: null })
       );
       res.json({
@@ -3533,10 +3822,10 @@ let upstreamCheckPending = false;
 app.get('/api/admin/overview', requireAdmin, async (req, res) => {
   try {
     if (!upstreamStatus.lastCheckedAt) {
-      await hnApiCall('/api/settings?keys=is_send_task');
+      await hnApiCall('/api/settings?keys=is_send_task', 'GET', null, true, 4500);
     } else if (!upstreamCheckPending && Date.now() - Date.parse(upstreamStatus.lastCheckedAt) > 60000) {
       upstreamCheckPending = true;
-      hnApiCall('/api/settings?keys=is_send_task').catch(() => {}).finally(() => { upstreamCheckPending = false; });
+      hnApiCall('/api/settings?keys=is_send_task', 'GET', null, true, 4500).catch(() => {}).finally(() => { upstreamCheckPending = false; });
     }
   } catch {}
 
@@ -4084,10 +4373,18 @@ app.delete('/api/admin/ctv/:id', requireAdmin, asyncRoute(async (req, res) => {
 }));
 
 // SPA Fallback
-app.use('/api', (req, res) => res.status(404).json({ success: false, message: 'API không tồn tại.' }));
+app.use('/api', (req, res) => {
+  if (!req.user) recordAbuseStrike(getClientIp(req), 2);
+  res.status(404).json({ success: false, message: 'API không tồn tại.' });
+});
 app.use((err, req, res, next) => {
   if (res.headersSent) return next(err);
-  res.status(err.status === 503 ? 503 : 400).json({ success: false, message: err.status === 503 ? err.message : 'Yêu cầu không hợp lệ. Vui lòng kiểm tra lại dữ liệu.' });
+  if (err?.status === 413 || err?.type === 'entity.too.large') {
+    return res.status(413).json({ success: false, message: 'Dữ liệu gửi lên vượt quá giới hạn cho phép.' });
+  }
+  const status = err?.status === 503 ? 503 : err?.status === 429 ? 429 : 400;
+  const message = status === 503 || status === 429 ? err.message : 'Yêu cầu không hợp lệ. Vui lòng kiểm tra lại dữ liệu.';
+  res.status(status).json({ success: false, message });
 });
 app.get('*', (req, res) => {
   if (serveCachedStatic(req, res, 'index.html')) return;
@@ -4098,7 +4395,7 @@ const httpServer = app.listen(PORT, HOST, async () => {
   ensureProtectedAssets();
   console.log(`ebongiu Server running at http://localhost:${PORT} (storage: ${postgres ? 'postgresql' : 'json'})`);
   try {
-    await hnApiCall('/api/settings?keys=is_send_task');
+    await hnApiCall('/api/settings?keys=is_send_task', 'GET', null, true, 5500);
     console.log('HoanNguyen API verified via HTTPS.');
     // Pre-warm catalog cache in background so first login/page load is instant.
     fetchRawCatalogFromHoanNguyen(true).then(() => {
@@ -4123,6 +4420,15 @@ const httpServer = app.listen(PORT, HOST, async () => {
   if (typeof refreshTimer.unref === 'function') refreshTimer.unref();
 });
 
+// Slowloris & HTTP socket flood protection
+if (httpServer && typeof httpServer === 'object') {
+  httpServer.headersTimeout = 10000;
+  httpServer.requestTimeout = 20000;
+  httpServer.keepAliveTimeout = 5000;
+  httpServer.maxRequestsPerSocket = 100;
+  httpServer.maxHeadersCount = 60;
+}
+
 let shuttingDown = false;
 async function gracefulShutdown() {
   if (shuttingDown) return;
@@ -4139,3 +4445,6 @@ async function gracefulShutdown() {
 }
 process.on('SIGTERM', gracefulShutdown);
 process.on('SIGINT', gracefulShutdown);
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled async error:', err?.message || String(err));
+});
