@@ -12,4 +12,5 @@ coverage/
 Thumbs.db
 .local-tools/
 release/
+*-backup-*.json
 .vscode/settings.json

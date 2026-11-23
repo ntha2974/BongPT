@@ -216,10 +216,10 @@ function setCtvMaintenanceOverlay(active, message = 'Hệ thống Zn đang bảo
     el.id = 'znMaintenanceOverlay';
     el.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(5,6,15,0.94);backdrop-filter:blur(14px);display:flex;align-items:center;justify-content:center;padding:24px;';
     el.innerHTML = `
-      <div style="max-width:440px;width:100%;background:rgba(20,22,42,0.96);border:1px solid rgba(251,191,36,0.45);border-radius:18px;padding:30px 26px;text-align:center;box-shadow:0 24px 64px rgba(0,0,0,0.6);display:flex;flex-direction:column;align-items:center;gap:14px;">
-        <img src="/logo.jpg" alt="ZnStudio" class="brand-logo-img brand-logo-lg" />
+      <div style="max-width:440px;width:100%;background:#fff;border:1px solid rgba(251,191,36,0.45);border-radius:18px;padding:30px 26px;text-align:center;box-shadow:0 24px 64px rgba(0,0,0,0.6);display:flex;flex-direction:column;align-items:center;gap:14px;">
+        <img src="/kitty-shop.jpg" alt="ZnStudio" class="brand-logo-img brand-logo-lg" />
         <span class="badge-tag amber" style="font-size:12px;">🛠️ ĐANG BẢO TRÌ</span>
-        <h2 id="znMaintenanceTitle" style="margin:0;color:#fff;font-size:22px;font-weight:700;">${escapeHtml(message)}</h2>
+        <h2 id="znMaintenanceTitle" style="margin:0;color:var(--color-pure-white);font-size:22px;font-weight:700;">${escapeHtml(message)}</h2>
         <p style="margin:0;color:var(--color-moon-mist);font-size:13.5px;line-height:1.6;">
           Hệ thống đang được quản trị viên bảo trì để cập nhật. Trang sẽ tự động mở lại ngay khi hoàn tất.
         </p>
@@ -271,7 +271,7 @@ function setCtvUpdateBanner(visible) {
   bar = document.createElement('button');
   bar.id = 'znCtvUpdateBanner';
   bar.type = 'button';
-  bar.style.cssText = 'position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:99998;background:linear-gradient(90deg,#6d28d9 0%,#4f46e5 100%);color:#fff;border:1px solid rgba(196,181,253,0.75);border-radius:999px;padding:10px 22px;font-size:13.5px;font-weight:700;cursor:pointer;box-shadow:0 12px 32px rgba(79,70,229,0.55);display:flex;align-items:center;gap:8px;max-width:calc(100vw - 24px);text-align:center;';
+  bar.style.cssText = 'position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:99998;background:linear-gradient(90deg,#b72f66,#c8487d);color:white;border:1px solid rgba(196,181,253,0.75);border-radius:999px;padding:10px 22px;font-size:13.5px;font-weight:700;cursor:pointer;box-shadow:0 12px 32px rgba(79,70,229,0.55);display:flex;align-items:center;gap:8px;max-width:calc(100vw - 24px);text-align:center;';
   bar.textContent = '🔄 Có cập nhật từ Zn, vui lòng bấm vào dòng này';
   bar.addEventListener('click', () => {
     try { sessionStorage.removeItem('znplay_catalog_cache'); } catch {}
@@ -456,15 +456,15 @@ function updateShellAuthUI() {
       const wl = state.catalogData?.weeklyLimit;
       if (wl) {
         walletPill.className = 'wallet-pill-box';
-        walletText.innerHTML = `Đã dùng: <strong style="color:#fbbf24;">${formatCompactVnd(wl.spent)}</strong> · Hạn mức: <strong style="color:#4ade80;">${formatCompactVnd(wl.limit)}</strong>`;
+        walletText.innerHTML = `Đã dùng: <strong style="color:#895d0a;">${formatCompactVnd(wl.spent)}</strong> · Hạn mức: <strong style="color:#28754e;">${formatCompactVnd(wl.limit)}</strong>`;
       } else {
         walletPill.className = 'wallet-pill-box';
-        walletText.innerHTML = `Quyền: <strong style="color:#4ade80;">Quản trị viên (Admin)</strong>`;
+        walletText.innerHTML = `Quyền: <strong style="color:#28754e;">Quản trị viên (Admin)</strong>`;
       }
     } else {
       const bal = Number(state.user.balance || 0);
       walletPill.className = `wallet-pill-box ${bal <= 0 ? 'is-empty' : ''}`;
-      walletText.innerHTML = `Số dư ví CTV: <strong style="color:${bal > 0 ? '#4ade80' : '#fca5a5'};">${formatVnd(bal)}</strong>`;
+      walletText.innerHTML = `Số dư ví CTV: <strong style="color:${bal > 0 ? '#28754e' : '#ab334a'};">${formatVnd(bal)}</strong>`;
     }
   }
 }
@@ -504,7 +504,7 @@ function expandCompactFruitMutations(data, fallbackMutations = null) {
           mutation_key: Number(mk),
           mutation_name: meta.name || `Đột biến #${mk}`,
           mutation_abbr: meta.abbr || '',
-          mutation_color: meta.color || '#a78bfa',
+          mutation_color: meta.color || '#9b3765',
           unit_price: Number(price || 0),
         };
       });
@@ -680,7 +680,7 @@ function renderCurrentView() {
     ? `
       <div class="glass-panel" style="background:rgba(228,109,76,0.16);box-shadow:rgba(228,109,76,0.45) 0 0 0 1px inset;padding:14px 20px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
         <div>
-          <div style="font-weight:600;color:#fca5a5;font-size:14px;">⚠️ Tài khoản CTV của bạn chưa có số dư (0đ)</div>
+          <div style="font-weight:600;color:#ab334a;font-size:14px;">⚠️ Tài khoản CTV của bạn chưa có số dư (0đ)</div>
           <div style="font-size:12px;color:var(--color-moon-mist);margin-top:2px;">
             Bạn vẫn có thể dùng công cụ tra cứu. Để đặt đơn, cần có đủ số dư và hệ thống lưu trữ ví an toàn. Liên hệ Admin khi cần nạp ví.
           </div>
@@ -848,8 +848,8 @@ function renderOrderCategoryPageHtml(catKey) {
           </div>
           <hr class="stat-divider" />
           <div class="stat-meta-row">
-            <span><span style="color:#4ade80;">▶ Đang bật</span> <strong>${activeOrdersCount}</strong></span>
-            <span><span style="color:#f87171;">⏸ Đang tắt</span> <strong>${inactiveOrdersCount}</strong></span>
+            <span><span style="color:#28754e;">▶ Đang bật</span> <strong>${activeOrdersCount}</strong></span>
+            <span><span style="color:#a8304c;">⏸ Đang tắt</span> <strong>${inactiveOrdersCount}</strong></span>
           </div>
         </div>
 
@@ -865,8 +865,8 @@ function renderOrderCategoryPageHtml(catKey) {
           </div>
           <hr class="stat-divider" />
           <div class="stat-meta-row">
-            <span><span style="color:#4ade80;">↗ Đang chạy</span> <strong>${formatNum(activeRemainingUnits)}</strong></span>
-            <span><span style="color:#f87171;">⏹ Tạm dừng</span> <strong>${formatNum(pausedRemainingUnits)}</strong></span>
+            <span><span style="color:#28754e;">↗ Đang chạy</span> <strong>${formatNum(activeRemainingUnits)}</strong></span>
+            <span><span style="color:#a8304c;">⏹ Tạm dừng</span> <strong>${formatNum(pausedRemainingUnits)}</strong></span>
           </div>
         </div>
 
@@ -877,15 +877,15 @@ function renderOrderCategoryPageHtml(catKey) {
           </div>
           <div class="stat-meta-row">
             <span>☁️ Tốc độ gửi:</span>
-            <strong style="color:#fff;">${Number(rateObj.assigned_rate || 0).toFixed(1)} ${escapeHtml(unitName)}/phút</strong>
+            <strong style="color:var(--color-pure-white);">${Number(rateObj.assigned_rate || 0).toFixed(1)} ${escapeHtml(unitName)}/phút</strong>
           </div>
           <div class="stat-meta-row">
             <span>✓ Thành công:</span>
-            <strong style="color:#4ade80;">${Number(rateObj.completed_rate || 0).toFixed(1)} ${escapeHtml(unitName)}/phút</strong>
+            <strong style="color:#28754e;">${Number(rateObj.completed_rate || 0).toFixed(1)} ${escapeHtml(unitName)}/phút</strong>
           </div>
           <div class="stat-meta-row">
             <span>🕒 Chờ sau lỗi:</span>
-            <strong style="color:#fff;">${rateObj.cooldown_second ?? 180} giây</strong>
+            <strong style="color:var(--color-pure-white);">${rateObj.cooldown_second ?? 180} giây</strong>
           </div>
         </div>
       </div>
@@ -896,8 +896,8 @@ function renderOrderCategoryPageHtml(catKey) {
     ${
       catKey === 'weather_buff'
         ? `
-      <div class="glass-panel" style="padding:14px 18px;border-left:3px solid #a78bfa;">
-        <div style="font-size:13px;font-weight:700;color:#c4b5fd;margin-bottom:6px;">📌 Lưu ý quy tắc Buff Thời Tiết:</div>
+      <div class="glass-panel" style="padding:14px 18px;border-left:3px solid #9b3765;">
+        <div style="font-size:13px;font-weight:700;color:#95436c;margin-bottom:6px;">📌 Lưu ý quy tắc Buff Thời Tiết:</div>
         <ul style="margin:0;padding-left:18px;font-size:12.5px;color:var(--color-moon-mist);line-height:1.7;">
           <li><strong>Bước 1:</strong> Bấm <strong>+ Thêm Đơn Hàng</strong> để mua gói số lần thời tiết trước (chưa cần chọn khách khi tạo gói).</li>
           <li><strong>Bước 2:</strong> Sau khi tạo đơn, hệ thống tự trả <strong>Link theo dõi công khai</strong> ở cột <strong>LINK</strong> — bấm <strong>📋 Copy link</strong> gửi cho khách tự xem & chỉnh, hoặc bấm <strong>👤 Gán khách</strong> + <strong>☁️ Chọn thời tiết</strong> trực tiếp trên bảng rồi bật công tắc chạy.</li>
@@ -1029,7 +1029,7 @@ function renderOrderTableRowHtml(o) {
   // Admin sees cost & profit tooltip; CTV ONLY sees o.sellPrice!
   const adminNote =
     isAdmin && o.costPrice !== undefined && o.markupAmount > 0
-      ? `<div style="font-size:10px;color:#4ade80;">Lãi: +${formatVnd(o.markupAmount)}</div>`
+      ? `<div style="font-size:10px;color:#28754e;">Lãi: +${formatVnd(o.markupAmount)}</div>`
       : '';
 
   const isWeather = o.category === 'weather_buff';
@@ -1046,7 +1046,7 @@ function renderOrderTableRowHtml(o) {
       <div style="display:flex;flex-direction:column;gap:4px;">
         ${
           wbHasCust
-            ? `<div style="font-weight:600;color:#fff;">${escapeHtml(o.customer?.nickname || '—')}</div>
+            ? `<div style="font-weight:600;color:var(--color-pure-white);">${escapeHtml(o.customer?.nickname || '—')}</div>
                <div style="font-size:11px;color:var(--color-fog-veil);">#${escapeHtml(o.remoteOrderId || o.id)} · SUID: ${escapeHtml(o.customer?.suid || '—')}</div>`
             : `<div><span class="badge-tag amber">⚠️ Chưa gán khách</span></div>
                <div style="font-size:11px;color:var(--color-fog-veil);">Đơn #${escapeHtml(o.remoteOrderId || o.id)}</div>`
@@ -1059,7 +1059,7 @@ function renderOrderTableRowHtml(o) {
       </div>
     `
     : `
-      <div style="font-weight:600;color:#fff;">${escapeHtml(o.customer?.nickname || '—')}</div>
+      <div style="font-weight:600;color:var(--color-pure-white);">${escapeHtml(o.customer?.nickname || '—')}</div>
       <div style="font-size:11px;color:var(--color-fog-veil);">
         #${escapeHtml(o.remoteOrderId || o.id)} · SUID: ${escapeHtml(o.customer?.suid || '—')}
       </div>
@@ -1121,7 +1121,7 @@ function renderOrderTableRowHtml(o) {
           }
           ${
             isAdmin && o.remoteOrderId && o.status !== 'cancelled'
-              ? `<div><button type="button" class="btn-frost" style="padding:3px 8px;font-size:10px;color:#fca5a5;" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="weather_buff">Hủy tại nguồn</button></div>`
+              ? `<div><button type="button" class="btn-frost" style="padding:3px 8px;font-size:10px;color:#ab334a;" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="weather_buff">Hủy tại nguồn</button></div>`
               : ''
           }
         </div>
@@ -1132,7 +1132,7 @@ function renderOrderTableRowHtml(o) {
       <td>
         ${
           o.remoteOrderId && o.status !== 'cancelled'
-            ? `<button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;color:#fca5a5;" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="${escapeHtml(o.category)}">Hủy tại nguồn</button>`
+            ? `<button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;color:#ab334a;" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="${escapeHtml(o.category)}">Hủy tại nguồn</button>`
             : '—'
         }
       </td>
@@ -1145,7 +1145,7 @@ function renderOrderTableRowHtml(o) {
       <td>${packageCellHtml}</td>
       <td><strong>${formatNum(o.totalCnt || 0)}</strong></td>
       <td>
-        <div style="font-weight:600;color:#fbbf24;">${formatVnd(o.sellPrice)}</div>
+        <div style="font-weight:600;color:#895d0a;">${formatVnd(o.sellPrice)}</div>
         ${adminNote}
       </td>
       ${
@@ -1153,8 +1153,8 @@ function renderOrderTableRowHtml(o) {
           ? ''
           : `
             <td>${formatNum(o.sendingCnt || 0)}</td>
-            <td style="color:#4ade80;font-weight:600;">${formatNum(o.completedCnt || 0)}</td>
-            <td style="color:#f87171;">${formatNum(o.failedCnt || 0)}</td>
+            <td style="color:#28754e;font-weight:600;">${formatNum(o.completedCnt || 0)}</td>
+            <td style="color:#a8304c;">${formatNum(o.failedCnt || 0)}</td>
             <td>
               <div style="font-size:12px;font-weight:600;">${pct}%</div>
             </td>
@@ -1395,7 +1395,7 @@ async function openCreateOrderModal(catKey, presetOptions = null) {
     body.innerHTML = `
       <div class="sync-loading-screen" style="padding:28px 16px;">
         <div style="font-size:28px;">⚠️</div>
-        <div class="sync-loading-title" style="color:#fca5a5;">Không thể cập nhật bảng giá mới nhất từ Zn</div>
+        <div class="sync-loading-title" style="color:#ab334a;">Không thể cập nhật bảng giá mới nhất từ Zn</div>
         <div class="sync-loading-sub">${escapeHtml(state.catalogWarning || 'Hệ thống nguồn tạm thời không phản hồi. Để tránh sai giá, vui lòng thử cập nhật lại trước khi đặt đơn.')}</div>
         <button type="button" class="btn-violet" id="btnRetryModalCatalogSync">↻ Thử cập nhật lại</button>
       </div>
@@ -1482,11 +1482,11 @@ function renderCreateOrderModalBody() {
                 return `
                   <button type="button" aria-pressed="${isSel}" class="pkg-picker-card ${isSel ? 'is-selected' : ''}" data-modal-coin-pkg="${p.id}">
                     <span style="display:flex;justify-content:space-between;align-items:center;">
-                      <strong style="color:#fff;font-size:14px;">${formatNum(p.coin_quantity || p.quantity)} Xu</strong>
+                      <strong style="color:var(--color-pure-white);font-size:14px;">${formatNum(p.coin_quantity || p.quantity)} Xu</strong>
                       ${p.is_on_sale ? `<span class="badge-tag amber">Sale</span>` : ''}
                     </span>
                     <span style="display:flex;align-items:baseline;gap:8px;">
-                      <span style="font-weight:700;color:#5eead4;font-size:15px;">${formatVnd(tObj.total_price)}</span>
+                      <span style="font-weight:700;color:#236f60;font-size:15px;">${formatVnd(tObj.total_price)}</span>
                       ${p.is_on_sale ? `<span style="text-decoration:line-through;font-size:11px;color:var(--color-fog-veil);">${formatVnd(tObj.original_price)}</span>` : ''}
                     </span>
                   </button>
@@ -1557,7 +1557,7 @@ function renderCreateOrderModalBody() {
                       <span style="width:8px;height:8px;border-radius:999px;background:${m.mutation_color};"></span>
                       <span>${escapeHtml(m.mutation_name)}</span>
                     </span>
-                    <span style="font-size:11px;color:#fbbf24;">${formatVnd(m.unit_price)}</span>
+                    <span style="font-size:11px;color:#895d0a;">${formatVnd(m.unit_price)}</span>
                   </button>
                 `;
               })
@@ -1578,7 +1578,7 @@ function renderCreateOrderModalBody() {
         <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Chọn gói số lượng${catKey === 'weather_buff' ? ' (Buff Thời Tiết)' : ''}:</label>
         ${
           pkgs.length === 0
-            ? `<div style="padding:14px;background:rgba(228,109,76,0.14);border-radius:8px;color:#fca5a5;">Hiện chưa có gói giá đang mở cho danh mục này.</div>`
+            ? `<div style="padding:14px;background:rgba(228,109,76,0.14);border-radius:8px;color:#ab334a;">Hiện chưa có gói giá đang mở cho danh mục này.</div>`
             : `
           <div class="pkg-picker-list">
             ${pkgs
@@ -1587,11 +1587,11 @@ function renderCreateOrderModalBody() {
                 return `
                   <button type="button" aria-pressed="${isSel}" class="pkg-picker-card ${isSel ? 'is-selected' : ''}" data-modal-std-pkg="${p.id}">
                     <span style="display:flex;justify-content:space-between;align-items:center;">
-                      <strong style="color:#fff;font-size:14px;">${catKey === 'weather_buff' ? '☁️ ' : ''}${formatNum(p.quantity)} ${unitTxt}</strong>
+                      <strong style="color:var(--color-pure-white);font-size:14px;">${catKey === 'weather_buff' ? '☁️ ' : ''}${formatNum(p.quantity)} ${unitTxt}</strong>
                       ${p.is_on_sale && p.sale ? `<span class="badge-tag amber">Còn ${p.sale.slots_remaining} slot</span>` : ''}
                     </span>
                     <span style="display:flex;align-items:baseline;gap:8px;">
-                      <span style="font-weight:700;color:#5eead4;font-size:15px;">${formatVnd(p.total_price)}</span>
+                      <span style="font-weight:700;color:#236f60;font-size:15px;">${formatVnd(p.total_price)}</span>
                       ${p.is_on_sale ? `<span style="text-decoration:line-through;font-size:11px;color:var(--color-fog-veil);">${formatVnd(p.original_price)}</span>` : ''}
                     </span>
                   </button>
@@ -1617,7 +1617,7 @@ function renderCreateOrderModalBody() {
     const gifts = catalog[catKey] || [];
     if (gifts.length === 0) {
       categoryFormHtml = `
-        <div style="padding:16px;background:rgba(228,109,76,0.14);border-radius:10px;color:#fca5a5;">
+        <div style="padding:16px;background:rgba(228,109,76,0.14);border-radius:10px;color:#ab334a;">
           Hiện tại danh mục <strong>${escapeHtml(VIEW_TITLES[catKey])}</strong> không có vật phẩm nào đang mở bán trên máy chủ.
         </div>
       `;
@@ -1641,8 +1641,8 @@ function renderCreateOrderModalBody() {
               const isSel = Number(state.modalOrder.gift_plant_id) === Number(p.id);
               return `
                 <div class="pkg-picker-card ${isSel ? 'is-selected' : ''}" data-modal-gift-pkg="${p.id}">
-                  <strong style="color:#fff;">Số lượng: ${formatNum(p.quantity)}</strong>
-                  <span style="font-weight:700;color:#5eead4;">${formatVnd(p.total_price)}</span>
+                  <strong style="color:var(--color-pure-white);">Số lượng: ${formatNum(p.quantity)}</strong>
+                  <span style="font-weight:700;color:#236f60;">${formatVnd(p.total_price)}</span>
                 </div>
               `;
             })
@@ -1652,7 +1652,7 @@ function renderCreateOrderModalBody() {
     }
   } else {
     categoryFormHtml = `
-      <div style="padding:16px;background:rgba(228,109,76,0.14);border-radius:10px;color:#fca5a5;">
+      <div style="padding:16px;background:rgba(228,109,76,0.14);border-radius:10px;color:#ab334a;">
         Danh mục này hiện đang tạm ngưng nhận đơn mới.
       </div>
     `;
@@ -1662,7 +1662,7 @@ function renderCreateOrderModalBody() {
     ${
       !isWorking
         ? `
-      <div style="padding:12px 14px;background:rgba(228,109,76,0.18);border-radius:8px;color:#fca5a5;font-size:13px;">
+      <div style="padding:12px 14px;background:rgba(228,109,76,0.18);border-radius:8px;color:#ab334a;font-size:13px;">
         ⚠️ Hệ thống chạy đơn <strong>${escapeHtml(VIEW_TITLES[catKey])}</strong> hiện đang ở trạng thái <strong>Không hoạt động</strong> trên máy chủ.
       </div>
     `
@@ -1672,14 +1672,14 @@ function renderCreateOrderModalBody() {
     ${
       catKey === 'weather_buff'
         ? `
-      <div style="padding:11px 14px;background:rgba(139,92,246,0.14);border-radius:10px;border:1px solid rgba(167,139,250,0.3);color:#ddd6fe;font-size:12.5px;line-height:1.55;">
+      <div style="padding:11px 14px;background:rgba(139,92,246,0.14);border-radius:10px;border:1px solid rgba(167,139,250,0.3);color:#723651;font-size:12.5px;line-height:1.55;">
         ☁️ <strong>Quy tắc Buff Thời Tiết:</strong> Chọn gói số lần và bấm <strong>Xác Nhận</strong> để tạo đơn trước (chưa cần chọn khách ngay lúc này). Sau khi tạo xong, bấm <strong>👤 Gán khách</strong> và <strong>☁️ Chọn thời tiết</strong> trên bảng đơn rồi bật chạy!
       </div>
     `
         : `
       <div style="background:rgba(255,255,255,0.02);padding:14px;border-radius:12px;box-shadow:var(--shadow-subtle);display:flex;flex-direction:column;gap:12px;">
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
-          <strong style="color:#fff;font-size:13px;">1. Chọn khách hàng Play Together</strong>
+          <strong style="color:var(--color-pure-white);font-size:13px;">1. Chọn khách hàng Play Together</strong>
           <div class="action-row">
             <button type="button" class="btn-frost ${state.modalOrder.customerTab === 'ingame' ? 'is-active' : ''}" data-mcust-tab="ingame" style="padding:4px 10px;font-size:11px;">
               Tìm theo Tên (Trong Game)
@@ -1698,7 +1698,7 @@ function renderCreateOrderModalBody() {
             ? `
           <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;background:rgba(102,58,243,0.18);padding:10px 14px;border-radius:8px;box-shadow:rgba(156,127,249,0.5) 0 0 0 1px inset;">
             <div>
-              <div style="font-weight:600;color:#fff;font-size:14px;">✓ ${escapeHtml(cust.nickname)}</div>
+              <div style="font-weight:600;color:var(--color-pure-white);font-size:14px;">✓ ${escapeHtml(cust.nickname)}</div>
               <div style="font-size:11px;color:var(--color-moon-mist);">SUID: ${escapeHtml(cust.suid || '—')} ${cust.region ? `· ${escapeHtml(cust.region)}` : ''}</div>
             </div>
             <button type="button" class="btn-frost" id="btnModalClearCust" style="padding:4px 10px;font-size:11px;">Đổi khách</button>
@@ -1732,10 +1732,10 @@ function renderCreateOrderModalBody() {
       ${categoryFormHtml}
     </div>
 
-    <div style="background:rgba(5,6,15,0.7);padding:14px 16px;border-radius:10px;box-shadow:var(--shadow-subtle);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+    <div style="background:#ffeff5;padding:14px 16px;border-radius:10px;box-shadow:var(--shadow-subtle);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
       <div>
         <div style="font-size:12px;color:var(--color-moon-mist);">Tổng tiền thanh toán:</div>
-        <div style="font-size:22px;font-weight:700;color:#fbbf24;" id="modalTotalPriceText">0đ</div>
+        <div style="font-size:22px;font-weight:700;color:#895d0a;" id="modalTotalPriceText">0đ</div>
       </div>
       <div class="action-row order-submit-actions">
         <button type="button" class="btn-frost" id="btnModalCancel">Hủy</button>
@@ -1977,7 +1977,7 @@ async function runModalCustomerSearch() {
           (p, i) => `
           <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
             <div>
-              <strong style="color:#fff;">${escapeHtml(p.Nickname)}</strong>
+              <strong style="color:var(--color-pure-white);">${escapeHtml(p.Nickname)}</strong>
               <span class="badge-tag violet" style="margin-left:6px;">${escapeHtml(p.RegionName || p.Region || 'VN')}</span>
               <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(p.suid)} · ${escapeHtml(p.Online_Status || '')}</div>
             </div>
@@ -2034,7 +2034,7 @@ async function runModalCustomerSearch() {
           (c) => `
           <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
             <div>
-              <strong style="color:#fff;">${escapeHtml(c.nickname || `Khách #${c.id}`)}</strong>
+              <strong style="color:var(--color-pure-white);">${escapeHtml(c.nickname || `Khách #${c.id}`)}</strong>
               <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(c.suid || '—')}</div>
             </div>
             <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11px;" data-pick-saved="${c.id}">Chọn</button>
@@ -2222,9 +2222,9 @@ function openWeatherSlotModal(order) {
         <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;background:rgba(102,58,243,0.16);border-radius:10px;border:1px solid rgba(167,139,250,0.35);">
           <div>
             <div style="font-size:11px;color:var(--color-moon-mist);">Khách hiện tại:</div>
-            <div style="font-weight:600;color:#fff;">${escapeHtml(order.customer?.nickname || '—')} <span style="font-weight:400;font-size:11px;color:var(--color-fog-veil);">(SUID: ${escapeHtml(order.customer?.suid || '—')})</span></div>
+            <div style="font-weight:600;color:var(--color-pure-white);">${escapeHtml(order.customer?.nickname || '—')} <span style="font-weight:400;font-size:11px;color:var(--color-fog-veil);">(SUID: ${escapeHtml(order.customer?.suid || '—')})</span></div>
           </div>
-          ${canClear ? `<button type="button" class="btn-frost" id="btnWbClearSlot" style="color:#fca5a5;font-size:11px;padding:5px 10px;">🗑️ Gỡ khách</button>` : ''}
+          ${canClear ? `<button type="button" class="btn-frost" id="btnWbClearSlot" style="color:#ab334a;font-size:11px;padding:5px 10px;">🗑️ Gỡ khách</button>` : ''}
         </div>
       `
           : ''
@@ -2276,7 +2276,7 @@ function openWeatherSlotModal(order) {
           resEl.innerHTML = list.map((p, i) => `
             <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
               <div>
-                <strong style="color:#fff;">${escapeHtml(p.Nickname)}</strong>
+                <strong style="color:var(--color-pure-white);">${escapeHtml(p.Nickname)}</strong>
                 <span class="badge-tag violet" style="margin-left:6px;">${escapeHtml(p.RegionName || p.Region || 'VN')}</span>
                 <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(p.suid)} · ${escapeHtml(p.Online_Status || '')}</div>
               </div>
@@ -2323,7 +2323,7 @@ function openWeatherSlotModal(order) {
           resEl.innerHTML = list.map((c) => `
             <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
               <div>
-                <strong style="color:#fff;">${escapeHtml(c.nickname || `Khách #${c.id}`)}</strong>
+                <strong style="color:var(--color-pure-white);">${escapeHtml(c.nickname || `Khách #${c.id}`)}</strong>
                 <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(c.suid || '—')}</div>
               </div>
               <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11px;" data-wb-pick-saved="${c.id}">Gán khách</button>
@@ -2391,7 +2391,7 @@ async function openWeatherConfigModal(order) {
 
   const activeTypes = state.catalogData?.catalog?.weather_buff_types || [];
   if (activeTypes.length === 0) {
-    body.innerHTML = `<div style="padding:16px;color:#fca5a5;">Không tải được danh sách loại thời tiết. Vui lòng thử làm mới dữ liệu.</div>`;
+    body.innerHTML = `<div style="padding:16px;color:#ab334a;">Không tải được danh sách loại thời tiết. Vui lòng thử làm mới dữ liệu.</div>`;
     return;
   }
 
@@ -2430,10 +2430,10 @@ async function openWeatherConfigModal(order) {
 
     body.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:10px 14px;border-radius:10px;background:${isOver ? 'rgba(239,68,68,0.16)' : 'rgba(16,185,129,0.12)'};border:1px solid ${isOver ? 'rgba(248,113,113,0.4)' : 'rgba(52,211,153,0.3)'};">
-        <div style="font-size:13px;color:#fff;">
-          Gói đã mua: <strong>${formatNum(pkgQty)} lần</strong> · Đã chọn: <strong style="color:${isOver ? '#fca5a5' : '#4ade80'};">${formatNum(totalUsed)}</strong> / ${formatNum(pkgQty)}
+        <div style="font-size:13px;color:var(--color-pure-white);">
+          Gói đã mua: <strong>${formatNum(pkgQty)} lần</strong> · Đã chọn: <strong style="color:${isOver ? '#ab334a' : '#28754e'};">${formatNum(totalUsed)}</strong> / ${formatNum(pkgQty)}
         </div>
-        <div style="font-size:12px;color:${isOver ? '#fca5a5' : 'var(--color-moon-mist)'};">
+        <div style="font-size:12px;color:${isOver ? '#ab334a' : 'var(--color-moon-mist)'};">
           ${isOver ? `Vượt gói ${formatNum(totalUsed - pkgQty)} lần!` : `Còn trống: ${formatNum(remaining)} lần`}
         </div>
       </div>
@@ -2451,7 +2451,7 @@ async function openWeatherConfigModal(order) {
           remaining > 0
             ? `<div style="display:flex;gap:6px;flex-wrap:wrap;">
                 ${[1, 5, 10, 50].filter(n => n <= remaining).map(n => `<button type="button" class="btn-frost" style="padding:3px 9px;font-size:11px;" data-wb-quick-qty="${n}">${n} lần</button>`).join('')}
-                <button type="button" class="btn-frost" style="padding:3px 9px;font-size:11px;color:#5eead4;" data-wb-quick-qty="${remaining}">Điền hết (${formatNum(remaining)} lần)</button>
+                <button type="button" class="btn-frost" style="padding:3px 9px;font-size:11px;color:#236f60;" data-wb-quick-qty="${remaining}">Điền hết (${formatNum(remaining)} lần)</button>
               </div>`
             : ''
         }
@@ -2466,8 +2466,8 @@ async function openWeatherConfigModal(order) {
                 <div style="display:flex;align-items:center;gap:8px;">
                   ${line.icon ? `<img src="${escapeHtml(line.icon)}" alt="" style="width:22px;height:22px;object-fit:contain;" />` : '<span>☁️</span>'}
                   <div>
-                    <div style="font-weight:600;color:#fff;font-size:13px;">${escapeHtml(line.name)}</div>
-                    ${line.locked ? `<div style="font-size:11px;color:#4ade80;">Đã chạy ${formatNum(line.completed_cnt)} lần (Cố định)</div>` : ''}
+                    <div style="font-weight:600;color:var(--color-pure-white);font-size:13px;">${escapeHtml(line.name)}</div>
+                    ${line.locked ? `<div style="font-size:11px;color:#28754e;">Đã chạy ${formatNum(line.completed_cnt)} lần (Cố định)</div>` : ''}
                   </div>
                 </div>
                 <div style="display:flex;align-items:center;gap:6px;">
@@ -2476,7 +2476,7 @@ async function openWeatherConfigModal(order) {
                       ? `<span class="badge-tag green">${formatNum(line.quantity)} lần</span>`
                       : `
                         <input type="number" class="input-box" style="width:82px;padding:5px 8px;text-align:center;" min="1" max="${pkgQty}" value="${line.quantity}" data-wb-line-qty="${idx}" />
-                        <button type="button" class="btn-frost" style="padding:4px 9px;font-size:11px;color:#fca5a5;" data-wb-line-del="${idx}">✕</button>
+                        <button type="button" class="btn-frost" style="padding:4px 9px;font-size:11px;color:#ab334a;" data-wb-line-del="${idx}">✕</button>
                       `
                   }
                 </div>
@@ -2602,9 +2602,9 @@ async function openFruitWarehouseModal() {
           <div style="display:flex;align-items:center;gap:10px;">
             ${f.icon ? `<img src="${escapeHtml(f.icon)}" loading="lazy" decoding="async" style="width:36px;height:36px;object-fit:contain;" alt="" />` : '🍎'}
             <div>
-              <div style="font-weight:600;color:#fff;font-size:13px;">${escapeHtml(f.name)}</div>
-              <div style="font-size:11px;color:#4ade80;">Tồn kho: ${formatNum(f.stock_quantity)}</div>
-              <div style="font-size:11px;color:#fbbf24;">Giá: ${formatVnd(f.unit_price)}/trái</div>
+              <div style="font-weight:600;color:var(--color-pure-white);font-size:13px;">${escapeHtml(f.name)}</div>
+              <div style="font-size:11px;color:#28754e;">Tồn kho: ${formatNum(f.stock_quantity)}</div>
+              <div style="font-size:11px;color:#895d0a;">Giá: ${formatVnd(f.unit_price)}/trái</div>
             </div>
           </div>
         </div>
@@ -2653,7 +2653,7 @@ async function openCoinWarehouseModal() {
   body.innerHTML = `
     <div style="background:rgba(38,150,132,0.16);padding:16px;border-radius:12px;box-shadow:var(--shadow-subtle);">
       <div style="font-size:12px;color:var(--color-moon-mist);">Tổng trữ lượng Xu sẵn sàng giao:</div>
-      <div style="font-size:26px;font-weight:700;color:#4ade80;margin-top:4px;">${formatNum(coin.quantity || 0)} Xu</div>
+      <div style="font-size:26px;font-weight:700;color:#28754e;margin-top:4px;">${formatNum(coin.quantity || 0)} Xu</div>
       <div style="font-size:12px;color:var(--color-fog-veil);margin-top:4px;">Tốc độ sản xuất ước tính: ~${formatNum(coin.estimated_per_hour || 0)} Xu/giờ</div>
     </div>
     <div class="table-wrap">
@@ -2710,18 +2710,18 @@ async function openCategoryPriceListModal(catKey) {
           .map(
             (g) => `
           <div style="background:rgba(255,255,255,0.03);padding:12px;border-radius:10px;">
-            <div style="font-weight:600;color:#fff;margin-bottom:8px;">${escapeHtml(g.name)}</div>
+            <div style="font-weight:600;color:var(--color-pure-white);margin-bottom:8px;">${escapeHtml(g.name)}</div>
             <div class="pkg-picker-list" style="max-height:none;">
               ${(g.packages || [])
                 .map(
                   (p) => `
                 <div class="pkg-picker-card">
                   <div style="display:flex;justify-content:space-between;gap:6px;">
-                    <strong style="color:#fff;">Số lượng ${formatNum(p.quantity)}</strong>
+                    <strong style="color:var(--color-pure-white);">Số lượng ${formatNum(p.quantity)}</strong>
                     ${p.is_on_sale && p.sale ? `<span class="badge-tag amber">Sale còn ${p.sale.slots_remaining}</span>` : ''}
                   </div>
                   <div style="display:flex;align-items:baseline;gap:8px;">
-                    <span style="font-size:16px;font-weight:700;color:#5eead4;">${formatVnd(p.total_price)}</span>
+                    <span style="font-size:16px;font-weight:700;color:#236f60;">${formatVnd(p.total_price)}</span>
                     ${p.is_on_sale && p.original_price > p.total_price ? `<span style="text-decoration:line-through;font-size:11px;color:var(--color-fog-veil);">${formatVnd(p.original_price)}</span>` : ''}
                   </div>
                 </div>
@@ -2745,11 +2745,11 @@ async function openCategoryPriceListModal(catKey) {
             (p) => `
           <div class="pkg-picker-card">
             <div style="display:flex;justify-content:space-between;gap:6px;">
-              <strong style="color:#fff;">Gói ${formatNum(p.quantity || p.coin_quantity)} ${unit}</strong>
+              <strong style="color:var(--color-pure-white);">Gói ${formatNum(p.quantity || p.coin_quantity)} ${unit}</strong>
               ${p.is_on_sale && p.sale ? `<span class="badge-tag amber">Sale còn ${p.sale.slots_remaining} slot</span>` : ''}
             </div>
             <div style="display:flex;align-items:baseline;gap:8px;">
-              <span style="font-size:16px;font-weight:700;color:#5eead4;">${formatVnd(p.total_price)}</span>
+              <span style="font-size:16px;font-weight:700;color:#236f60;">${formatVnd(p.total_price)}</span>
               ${p.is_on_sale && p.original_price > p.total_price ? `<span style="text-decoration:line-through;font-size:11px;color:var(--color-fog-veil);">${formatVnd(p.original_price)}</span>` : ''}
             </div>
           </div>
@@ -2786,19 +2786,19 @@ function renderDashboardOverviewHtml() {
     <div class="stats-three-grid">
       <div class="glass-panel">
         <div style="font-size:12px;color:var(--color-moon-mist);">Trữ lượng Kho Xu Nông Trại</div>
-        <div style="font-size:24px;font-weight:700;color:#4ade80;margin-top:6px;">${formatNum(coinQty)} Xu</div>
+        <div style="font-size:24px;font-weight:700;color:#28754e;margin-top:6px;">${formatNum(coinQty)} Xu</div>
         <div style="font-size:12px;color:var(--color-fog-veil);margin-top:4px;">Kho trái cây: ${formatNum(totalFruits)} trái sẵn sàng</div>
       </div>
 
       <div class="glass-panel">
         <div style="font-size:12px;color:var(--color-moon-mist);">Đơn hàng đang chạy</div>
-        <div style="font-size:24px;font-weight:700;color:#fff;margin-top:6px;">${activeOrders} đơn đang bật</div>
+        <div style="font-size:24px;font-weight:700;color:var(--color-pure-white);margin-top:6px;">${activeOrders} đơn đang bật</div>
         <div style="font-size:12px;color:var(--color-fog-veil);margin-top:4px;">Tổng số đơn: ${state.orders.length} đơn</div>
       </div>
 
       <div class="glass-panel">
         <div style="font-size:12px;color:var(--color-moon-mist);">${state.user.role === 'admin' ? 'Trạng thái Quản trị Admin' : 'Số dư Ví CTV của bạn'}</div>
-        <div style="font-size:24px;font-weight:700;color:#fbbf24;margin-top:6px;">
+        <div style="font-size:24px;font-weight:700;color:#895d0a;margin-top:6px;">
           ${state.user.role === 'admin' ? 'Đã đồng bộ API' : formatVnd(state.user.balance)}
         </div>
         <div style="font-size:12px;color:var(--color-fog-veil);margin-top:4px;">
@@ -2817,7 +2817,7 @@ function renderDashboardOverviewHtml() {
             (c) => `
           <button type="button" class="stat-subcard dashboard-category" data-dash-goto="${c.key}">
             <span style="display:flex;align-items:center;justify-content:space-between;">
-              <strong style="color:#fff;font-size:15px;">${c.icon} ${escapeHtml(c.name)}</strong>
+              <strong style="color:var(--color-pure-white);font-size:15px;">${c.icon} ${escapeHtml(c.name)}</strong>
               <span class="system-status-chip ${c.working ? 'is-working' : 'is-not-working'}" style="font-size:11px;padding:2px 8px;">
                 ● ${c.working ? 'Hoạt động' : 'Tạm ngưng'}
               </span>
@@ -2859,15 +2859,15 @@ async function renderWeeklySettlementsView(container, zeroBannerHtml) {
         <div class="stats-three-grid">
           <div class="stat-subcard">
             <div style="font-size:12px;color:var(--color-moon-mist);">Hạn mức tuần nguồn</div>
-            <div style="font-size:22px;font-weight:700;color:#fff;">${formatVnd(wl.limit)}</div>
+            <div style="font-size:22px;font-weight:700;color:var(--color-pure-white);">${formatVnd(wl.limit)}</div>
           </div>
           <div class="stat-subcard">
             <div style="font-size:12px;color:var(--color-moon-mist);">Đã sử dụng trong tuần</div>
-            <div style="font-size:22px;font-weight:700;color:#fbbf24;">${formatVnd(wl.spent)}</div>
+            <div style="font-size:22px;font-weight:700;color:#895d0a;">${formatVnd(wl.spent)}</div>
           </div>
           <div class="stat-subcard">
             <div style="font-size:12px;color:var(--color-moon-mist);">Hạn mức còn lại</div>
-            <div style="font-size:22px;font-weight:700;color:#4ade80;">${formatVnd(wl.remaining)}</div>
+            <div style="font-size:22px;font-weight:700;color:#28754e;">${formatVnd(wl.remaining)}</div>
           </div>
         </div>
       `;
@@ -2877,15 +2877,15 @@ async function renderWeeklySettlementsView(container, zeroBannerHtml) {
         <div class="stats-three-grid">
           <div class="stat-subcard">
             <div style="font-size:12px;color:var(--color-moon-mist);">Số dư ví hiện tại</div>
-            <div style="font-size:22px;font-weight:700;color:#4ade80;">${formatVnd(s.currentBalance)}</div>
+            <div style="font-size:22px;font-weight:700;color:#28754e;">${formatVnd(s.currentBalance)}</div>
           </div>
           <div class="stat-subcard">
             <div style="font-size:12px;color:var(--color-moon-mist);">Tổng đơn đã đặt</div>
-            <div style="font-size:22px;font-weight:700;color:#fff;">${s.orderCount} đơn</div>
+            <div style="font-size:22px;font-weight:700;color:var(--color-pure-white);">${s.orderCount} đơn</div>
           </div>
           <div class="stat-subcard">
             <div style="font-size:12px;color:var(--color-moon-mist);">Tổng tiền đã thanh toán</div>
-            <div style="font-size:22px;font-weight:700;color:#fbbf24;">${formatVnd(s.totalSpent)}</div>
+            <div style="font-size:22px;font-weight:700;color:#895d0a;">${formatVnd(s.totalSpent)}</div>
           </div>
         </div>
       `;
@@ -2926,7 +2926,7 @@ async function renderWeeklySettlementsView(container, zeroBannerHtml) {
                     <tr>
                       <td><strong>${escapeHtml(t.id)}</strong></td>
                       <td>${escapeHtml(t.userName)}</td>
-                      <td style="font-weight:700;color:${t.amount >= 0 ? '#4ade80' : '#fca5a5'};">
+                      <td style="font-weight:700;color:${t.amount >= 0 ? '#28754e' : '#ab334a'};">
                         ${t.amount >= 0 ? `+${formatVnd(t.amount)}` : formatVnd(t.amount)}
                       </td>
                       <td>${formatVnd(t.balanceAfter)}</td>
@@ -3063,7 +3063,7 @@ function bindUserSearchPageEvents() {
           <div class="stat-subcard">
             <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
               <div>
-                <div style="font-weight:700;color:#fff;font-size:15px;">${escapeHtml(p.Nickname)}</div>
+                <div style="font-weight:700;color:var(--color-pure-white);font-size:15px;">${escapeHtml(p.Nickname)}</div>
                 <div style="font-size:12px;color:var(--color-moon-mist);">Khu vực: ${escapeHtml(p.RegionName || p.Region || 'VN')} · Lv.${p.AchievementLevel ?? 1}</div>
                 <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(p.suid)} · ${escapeHtml(p.Online_Status || '')}</div>
               </div>
@@ -3230,7 +3230,7 @@ function renderAdminPricingPageHtml() {
         <div>
           <span class="panel-title-text">🏷️ Tùy chỉnh Giá bán CTV cho từng Danh mục & Sản phẩm</span>
           <div style="font-size:12px;color:var(--color-fog-veil);margin-top:4px;">
-            Đồng bộ nguồn API lúc <strong style="color:#5eead4;">${escapeHtml(syncedText)}</strong> · Hỗ trợ chỉnh <strong>+VNĐ (thủ công)</strong> hoặc <strong>+% (phần trăm)</strong> cho từng danh mục và từng gói riêng lẻ.
+            Đồng bộ nguồn API lúc <strong style="color:#236f60;">${escapeHtml(syncedText)}</strong> · Hỗ trợ chỉnh <strong>+VNĐ (thủ công)</strong> hoặc <strong>+% (phần trăm)</strong> cho từng danh mục và từng gói riêng lẻ.
           </div>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
@@ -3274,7 +3274,7 @@ function renderAdminPricingPageHtml() {
             return `
               <div class="pricing-cat-card" data-cat-card="${cat.key}">
                 <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
-                  <strong style="color:#fff;font-size:14px;">${cat.icon} ${escapeHtml(cat.label)}</strong>
+                  <strong style="color:var(--color-pure-white);font-size:14px;">${cat.icon} ${escapeHtml(cat.label)}</strong>
                   <span class="system-status-chip ${isWorking ? 'is-working' : 'is-not-working'}" style="font-size:11px;padding:2px 8px;">
                     ● ${isWorking ? 'Hoạt động' : 'Tạm ngưng'}
                   </span>
@@ -3323,7 +3323,7 @@ function renderAdminPricingPageHtml() {
                 <div class="pricing-preview-line" id="admCatPreview_${cat.key}" data-sample-name="${escapeHtml(sample?.name || '')}" data-sample-cost="${sample?.cost || 0}">
                   ${
                     sample
-                      ? `VD: <strong>${escapeHtml(sample.name)}</strong> · gốc ${formatVnd(sample.cost)} → bán CTV <strong style="color:#5eead4;">${formatVnd(sampleSell)}</strong> <span style="color:#4ade80;">(+${formatVnd(sampleProfit)})</span>`
+                      ? `VD: <strong>${escapeHtml(sample.name)}</strong> · gốc ${formatVnd(sample.cost)} → bán CTV <strong style="color:#236f60;">${formatVnd(sampleSell)}</strong> <span style="color:#28754e;">(+${formatVnd(sampleProfit)})</span>`
                       : `Hiện nguồn chưa mở gói mẫu cho danh mục này; mức cộng sẽ tự áp dụng ngay khi nguồn mở bán.`
                   }
                 </div>
@@ -3331,7 +3331,7 @@ function renderAdminPricingPageHtml() {
                 <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:auto;padding-top:4px;flex-wrap:wrap;">
                   ${
                     overrideCount > 0
-                      ? `<label style="display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:#fbbf24;cursor:pointer;">
+                      ? `<label style="display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:#895d0a;cursor:pointer;">
                           <input type="checkbox" id="admCatApplyOvr_${cat.key}" checked />
                           <span>Áp dụng luôn cho ${overrideCount} giá riêng</span>
                         </label>`
@@ -3399,9 +3399,9 @@ function renderAdminPricingPageHtml() {
                 <tr>
                   <td><span class="badge-tag violet">${escapeHtml(p.catLabel)}</span></td>
                   <td>
-                    <strong style="color:#fff;">${escapeHtml(p.name)}</strong>
+                    <strong style="color:var(--color-pure-white);">${escapeHtml(p.name)}</strong>
                     ${p.isOnSale ? `<span class="badge-tag amber" style="margin-left:6px;">Sale</span>` : ''}
-                    <div style="font-size:10.5px;color:${p.hasOverride ? '#fbbf24' : '#5eead4'};margin-top:2px;">
+                    <div style="font-size:10.5px;color:${p.hasOverride ? '#895d0a' : '#236f60'};margin-top:2px;">
                       ${p.hasOverride ? 'Giá cố định riêng' : modes[p.catKey] === 'percent' ? `Tự động (+${percents[p.catKey] ?? 0}%)` : `Tự động (+${formatVnd(cm[p.catKey] ?? 5000)})`}
                     </div>
                   </td>
@@ -3444,7 +3444,7 @@ function renderAdminPricingPageHtml() {
           : `
         <div style="background:rgba(102,58,243,0.12);padding:14px 16px;border-radius:10px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-            <span style="font-size:13px;color:#fff;font-weight:600;">Mức chung cho trái chưa chỉnh riêng:</span>
+            <span style="font-size:13px;color:var(--color-pure-white);font-weight:600;">Mức chung cho trái chưa chỉnh riêng:</span>
             <div class="pricing-mode-switch">
               <button type="button" class="pricing-mode-btn ${fruitMode === 'fixed' ? 'is-active' : ''}" id="btnFruitBarModeFixed">+VNĐ/trái</button>
               <button type="button" class="pricing-mode-btn ${fruitMode === 'percent' ? 'is-active' : ''}" id="btnFruitBarModePct">+%</button>
@@ -3453,7 +3453,7 @@ function renderAdminPricingPageHtml() {
             <span id="admFruitGeneralUnit" style="font-size:12px;color:var(--color-moon-mist);">${fruitMode === 'percent' ? '%' : 'đ / trái'}</span>
             ${
               Object.keys(fruitOverrides).length > 0
-                ? `<label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#fbbf24;cursor:pointer;">
+                ? `<label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#895d0a;cursor:pointer;">
                     <input type="checkbox" id="admFruitApplyAllOverrides" checked />
                     <span>Áp dụng luôn cho ${Object.keys(fruitOverrides).length} trái đang đặt giá riêng</span>
                   </label>`
@@ -3516,8 +3516,8 @@ function renderAdminFruitRowsHtml(fruits) {
             <div style="display:flex;align-items:center;gap:10px;">
               ${f.icon ? `<img src="${escapeHtml(f.icon)}" loading="lazy" decoding="async" style="width:30px;height:30px;object-fit:contain;" alt="" />` : '🍎'}
               <div>
-                <strong style="color:#fff;">${escapeHtml(f.name)}</strong>
-                <div style="font-size:10.5px;color:${hasOverride ? '#fbbf24' : '#5eead4'};">
+                <strong style="color:var(--color-pure-white);">${escapeHtml(f.name)}</strong>
+                <div style="font-size:10.5px;color:${hasOverride ? '#895d0a' : '#236f60'};">
                   ${hasOverride ? 'Giá cố định riêng' : fruitMode === 'percent' ? `Tự động (+${fruitPct}%)` : `Tự động (+${formatVnd(defMk)})`}
                 </div>
               </div>
@@ -3646,7 +3646,7 @@ function updateCategoryCardPreview(catKey) {
   const pctVal = Number(document.getElementById(`admCatPct_${catKey}`)?.value || 0);
   const sell = computePreviewSell(sampleCost, mode, fixedVal, pctVal);
   const profit = sell - sampleCost;
-  previewEl.innerHTML = `VD: <strong>${escapeHtml(sampleName)}</strong> · gốc ${formatVnd(sampleCost)} → bán CTV <strong style="color:#5eead4;">${formatVnd(sell)}</strong> <span style="color:#4ade80;">(+${formatVnd(profit)})</span>`;
+  previewEl.innerHTML = `VD: <strong>${escapeHtml(sampleName)}</strong> · gốc ${formatVnd(sampleCost)} → bán CTV <strong style="color:#236f60;">${formatVnd(sell)}</strong> <span style="color:#28754e;">(+${formatVnd(profit)})</span>`;
 }
 
 function buildCategoryPayload(catKey) {
@@ -3992,13 +3992,13 @@ function openAdminMutationPricingModal(fruitId) {
   body.innerHTML = `
     <div style="background:rgba(102,58,243,0.12);padding:12px 14px;border-radius:10px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-        <span style="font-size:12px;color:#fff;font-weight:600;">Áp nhanh cả 19 hệ:</span>
+        <span style="font-size:12px;color:var(--color-pure-white);font-weight:600;">Áp nhanh cả 19 hệ:</span>
         <input type="number" id="mutBulkPctInput" class="input-box" style="width:90px;padding:6px 8px;" placeholder="%" value="20" min="0" max="500" />
         <button type="button" class="btn-frost" id="btnApplyMutBulkPct" style="padding:6px 10px;font-size:12px;">Áp dụng +%</button>
         <input type="number" id="mutBulkVndInput" class="input-box" style="width:110px;padding:6px 8px;" placeholder="VNĐ" value="500" step="100" min="0" />
         <button type="button" class="btn-frost" id="btnApplyMutBulkVnd" style="padding:6px 10px;font-size:12px;">Áp dụng +VNĐ</button>
       </div>
-      <button type="button" class="btn-frost" id="btnResetAllMutAuto" style="padding:6px 10px;font-size:11.5px;color:#fca5a5;">↺ Đặt lại tất cả về tự động</button>
+      <button type="button" class="btn-frost" id="btnResetAllMutAuto" style="padding:6px 10px;font-size:11.5px;color:#ab334a;">↺ Đặt lại tất cả về tự động</button>
     </div>
 
     <div class="table-wrap" style="max-height:400px;overflow-y:auto;">
@@ -4023,9 +4023,9 @@ function openAdminMutationPricingModal(fruitId) {
               <td>
                 <span style="display:inline-flex;align-items:center;gap:6px;">
                   <span style="width:10px;height:10px;border-radius:999px;background:${m.mutation_color};"></span>
-                  <strong style="color:#fff;">${escapeHtml(m.mutation_name)}</strong>
+                  <strong style="color:var(--color-pure-white);">${escapeHtml(m.mutation_name)}</strong>
                 </span>
-                <div style="font-size:10px;color:${hasOvr ? '#fbbf24' : '#5eead4'};margin-top:2px;">${hasOvr ? 'Giá cố định riêng' : 'Tự động'}</div>
+                <div style="font-size:10px;color:${hasOvr ? '#895d0a' : '#236f60'};margin-top:2px;">${hasOvr ? 'Giá cố định riêng' : 'Tự động'}</div>
               </td>
               <td>${formatVnd(cost)}</td>
               <td style="max-width:170px;">
@@ -4161,7 +4161,7 @@ function renderAdminCtvPageHtml() {
     <div class="glass-panel" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px;border:1px solid ${isMaintenance ? 'rgba(248,113,113,0.55)' : 'rgba(167,139,250,0.3)'};background:${isMaintenance ? 'rgba(239,68,68,0.12)' : 'rgba(255,255,255,0.03)'};">
       <div style="display:flex;flex-direction:column;gap:4px;">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-          <strong style="color:#fff;font-size:15px;">🛠️ Chế độ Bảo trì CTV</strong>
+          <strong style="color:var(--color-pure-white);font-size:15px;">🛠️ Chế độ Bảo trì CTV</strong>
           <span class="badge-tag ${isMaintenance ? 'red' : 'green'}">${isMaintenance ? '● ĐANG BẢO TRÌ' : '● Đang hoạt động'}</span>
         </div>
         <div style="font-size:12.5px;color:var(--color-moon-mist);">
@@ -4176,7 +4176,7 @@ function renderAdminCtvPageHtml() {
         <button type="button" class="btn-violet" id="btnNotifyCtvUpdate" style="padding:9px 16px;font-size:13px;font-weight:700;">
           🔄 Cập nhật cho CTV
         </button>
-        <button type="button" class="${isMaintenance ? 'btn-violet' : 'btn-frost'}" id="btnToggleMaintenanceMode" style="padding:9px 18px;font-size:13px;font-weight:700;${isMaintenance ? '' : 'border-color:rgba(251,191,36,0.5);color:#fbbf24;'}">
+        <button type="button" class="${isMaintenance ? 'btn-violet' : 'btn-frost'}" id="btnToggleMaintenanceMode" style="padding:9px 18px;font-size:13px;font-weight:700;${isMaintenance ? '' : 'border-color:rgba(251,191,36,0.5);color:#895d0a;'}">
           ${isMaintenance ? '✓ Tắt bảo trì (Mở lại cho CTV)' : '🛠️ Bảo trì'}
         </button>
       </div>
@@ -4189,15 +4189,15 @@ function renderAdminCtvPageHtml() {
     <div class="stats-three-grid">
       <div class="glass-panel">
         <div style="font-size:12px;color:var(--color-moon-mist);">Tổng số tài khoản CTV</div>
-        <div style="font-size:24px;font-weight:700;color:#fff;margin-top:4px;">${ctvs.length} CTV</div>
+        <div style="font-size:24px;font-weight:700;color:var(--color-pure-white);margin-top:4px;">${ctvs.length} CTV</div>
       </div>
       <div class="glass-panel">
         <div style="font-size:12px;color:var(--color-moon-mist);">Tổng doanh thu CTV đặt đơn</div>
-        <div style="font-size:24px;font-weight:700;color:#fbbf24;margin-top:4px;">${formatVnd(stats.totalRevenue || 0)}</div>
+        <div style="font-size:24px;font-weight:700;color:#895d0a;margin-top:4px;">${formatVnd(stats.totalRevenue || 0)}</div>
       </div>
       <div class="glass-panel">
         <div style="font-size:12px;color:var(--color-moon-mist);">Tổng lợi nhuận chênh lệch Admin</div>
-        <div style="font-size:24px;font-weight:700;color:#4ade80;margin-top:4px;">+${formatVnd(stats.totalProfit || 0)}</div>
+        <div style="font-size:24px;font-weight:700;color:#28754e;margin-top:4px;">+${formatVnd(stats.totalProfit || 0)}</div>
       </div>
     </div>
 
@@ -4256,13 +4256,13 @@ function renderAdminCtvPageHtml() {
               .map(
                 (u) => `
               <tr>
-                <td><strong style="color:#fff;">${escapeHtml(u.name)}</strong><div style="font-size:11px;color:var(--color-fog-veil);">SĐT: ${escapeHtml(u.phone || '—')}</div></td>
+                <td><strong style="color:var(--color-pure-white);">${escapeHtml(u.name)}</strong><div style="font-size:11px;color:var(--color-fog-veil);">SĐT: ${escapeHtml(u.phone || '—')}</div></td>
                 <td><strong>${escapeHtml(u.username)}</strong><div style="font-size:11px;color:var(--color-fog-veil);">${escapeHtml(u.email)}</div></td>
-                <td><strong style="font-size:15px;color:${u.balance > 0 ? '#4ade80' : '#fca5a5'};">${formatVnd(u.balance)}</strong></td>
+                <td><strong style="font-size:15px;color:${u.balance > 0 ? '#28754e' : '#ab334a'};">${formatVnd(u.balance)}</strong></td>
                 <td>${u.totalOrders || 0} đơn</td>
                 <td>
                   <div>Đã mua: ${formatVnd(u.totalSpent || 0)}</div>
-                  <div style="font-size:11px;color:#4ade80;">Lãi Admin: +${formatVnd(u.totalProfit || 0)}</div>
+                  <div style="font-size:11px;color:#28754e;">Lãi Admin: +${formatVnd(u.totalProfit || 0)}</div>
                 </td>
                 <td>
                   <span class="badge-tag ${u.isLocked ? 'red' : u.balance > 0 ? 'green' : 'amber'}">
@@ -4277,7 +4277,7 @@ function renderAdminCtvPageHtml() {
                     <button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;" data-lock-ctv="${u.id}" data-locked="${u.isLocked ? '1' : '0'}">
                       ${u.isLocked ? 'Mở khóa' : 'Khóa'}
                     </button>
-                    <button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;color:#fca5a5;" data-del-ctv="${u.id}">
+                    <button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;color:#ab334a;" data-del-ctv="${u.id}">
                       Ngừng tài khoản
                     </button>
                     <button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;" data-reset-ctv="${u.id}">Đổi mật khẩu</button>
@@ -4481,21 +4481,21 @@ function renderAdminSystemPageHtml() {
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;">
           <div class="stat-subcard" style="padding:12px 14px;">
             <div style="font-size:11px;color:var(--color-fog-veil);">Tài khoản CTV</div>
-            <strong style="font-size:18px;color:#fff;">${stats.totalCtvCount || 0} CTV</strong>
+            <strong style="font-size:18px;color:var(--color-pure-white);">${stats.totalCtvCount || 0} CTV</strong>
           </div>
           <div class="stat-subcard" style="padding:12px 14px;">
             <div style="font-size:11px;color:var(--color-fog-veil);">Tổng số dư ví CTV</div>
-            <strong style="font-size:18px;color:#4ade80;">${formatVnd(stats.totalCtvBalance || 0)}</strong>
+            <strong style="font-size:18px;color:#28754e;">${formatVnd(stats.totalCtvBalance || 0)}</strong>
           </div>
           <div class="stat-subcard" style="padding:12px 14px;">
             <div style="font-size:11px;color:var(--color-fog-veil);">Đơn hàng / Giao dịch</div>
-            <strong style="font-size:18px;color:#fbbf24;">${stats.totalLocalOrders || 0} / ${stats.totalTransactions || 0}</strong>
+            <strong style="font-size:18px;color:#895d0a;">${stats.totalLocalOrders || 0} / ${stats.totalTransactions || 0}</strong>
           </div>
         </div>
 
         ${!isPg ? `
           <div class="storage-guide-box">
-            <strong style="color:#fff;">✨ Phương án lưu trữ MIỄN PHÍ vĩnh viễn cho Render Free (&lt;10 CTV): Neon PostgreSQL</strong>
+            <strong style="color:var(--color-pure-white);">✨ Phương án lưu trữ MIỄN PHÍ vĩnh viễn cho Render Free (&lt;10 CTV): Neon PostgreSQL</strong>
             <ol>
               <li>Vào <strong>neon.tech</strong> (đăng nhập bằng GitHub/Google, miễn phí 0đ trọn đời, không cần thẻ tín dụng) → Tạo Project mới (chọn Region gần Render như Singapore hoặc US East).</li>
               <li>Bấm <strong>Connect</strong> → Copy chuỗi kết nối PostgreSQL (bắt đầu bằng <code>postgresql://...</code>).</li>
@@ -4506,7 +4506,7 @@ function renderAdminSystemPageHtml() {
             </div>
           </div>
         ` : `
-          <div style="font-size:12.5px;color:#5eead4;background:rgba(38,150,132,0.12);padding:10px 14px;border-radius:10px;">
+          <div style="font-size:12.5px;color:#236f60;background:rgba(38,150,132,0.12);padding:10px 14px;border-radius:10px;">
             ✓ Hệ thống đang kết nối PostgreSQL bền vững. Toàn bộ tài khoản CTV, số dư ví, đơn hàng và bảng giá được bảo toàn an toàn khi hosting nghỉ hoặc khởi động lại.
           </div>
         `}
@@ -4527,7 +4527,7 @@ function renderAdminSystemPageHtml() {
           ${srcCfg.connected ? '● Đã kết nối' : '○ Chưa kết nối'}
         </span>
       </div>
-      ${srcCfg.lastError ? `<div style="color:#fca5a5;font-size:12px;">${escapeHtml(srcCfg.lastError)}</div>` : ''}
+      ${srcCfg.lastError ? `<div style="color:#ab334a;font-size:12px;">${escapeHtml(srcCfg.lastError)}</div>` : ''}
       <div style="display:flex;flex-direction:column;gap:14px;">
         <div>
           <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Email tài khoản nguồn API:</label>

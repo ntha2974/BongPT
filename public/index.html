@@ -5,7 +5,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ZnStudio — Hệ Thống Chạy Đơn Play Together</title>
-  <link rel="icon" type="image/jpeg" href="/logo.jpg" />
+  <link rel="icon" type="image/jpeg" href="/kitty-shop.jpg" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 
@@ -15,9 +15,10 @@
        LOGIN GATE SCREEN (SHOWN WHEN NOT LOGGED IN)
        ======================================================================== -->
   <div class="auth-gate-screen" id="authGateScreen" style="display:flex;">
+    <div class="login-frame"><div class="login-art" aria-hidden="true"></div>
     <form class="auth-gate-card" id="gateLoginForm">
       <div style="display:flex;align-items:center;gap:14px;">
-        <img src="/logo.jpg" alt="ZnStudio Logo" class="brand-logo-img brand-logo-lg" />
+        <img src="/kitty-shop.jpg" alt="ZnStudio Logo" class="brand-logo-img brand-logo-lg" />
         <div>
           <div class="brand-title" style="font-size:23px;">ZnStudio</div>
           <div style="font-size:12px;color:var(--color-fog-veil);">Hệ thống quản lý & chạy đơn Play Together</div>
@@ -49,6 +50,7 @@
       </button>
 
     </form>
+    </div>
   </div>
 
   <!-- ========================================================================
@@ -63,7 +65,7 @@
     <aside class="app-sidebar" id="appSidebar">
       <div class="sidebar-brand">
         <a href="#" class="brand-logo-wrap" id="brandHomeLink">
-          <img src="/logo.jpg" alt="ZnStudio Logo" class="brand-logo-img" />
+          <img src="/kitty-shop.jpg" alt="ZnStudio Logo" class="brand-logo-img" />
           <span class="brand-title">ZnStudio</span>
         </a>
         <span class="badge-tag violet" id="sidebarRoleBadge">CTV</span>
@@ -84,7 +86,7 @@
 
         <button type="button" class="sidebar-item" data-view="farm_gift">
           <span class="sidebar-item-left">
-            <span class="sidebar-icon">🏪</span>
+            <span class="sidebar-icon">🎁</span>
             <span>Quà nông trại</span>
           </span>
           <span class="sidebar-status-dot is-loading" id="dot_farm_gift" title="Đang đồng bộ trạng thái..."></span>
@@ -92,7 +94,7 @@
 
         <button type="button" class="sidebar-item" data-view="mail_gift">
           <span class="sidebar-item-left">
-            <span class="sidebar-icon">✉️</span>
+            <span class="sidebar-icon">💌</span>
             <span>Quà thư</span>
           </span>
           <span class="sidebar-status-dot is-loading" id="dot_mail_gift" title="Đang đồng bộ trạng thái..."></span>
@@ -108,7 +110,7 @@
 
         <button type="button" class="sidebar-item" data-view="buff_tim">
           <span class="sidebar-item-left">
-            <span class="sidebar-icon">🤍</span>
+            <span class="sidebar-icon">💗</span>
             <span>Buff Tim</span>
           </span>
           <span class="sidebar-status-dot is-loading" id="dot_buff_tim" title="Đang đồng bộ trạng thái..."></span>
@@ -116,7 +118,7 @@
 
         <button type="button" class="sidebar-item" data-view="buff_sao">
           <span class="sidebar-item-left">
-            <span class="sidebar-icon">☆</span>
+            <span class="sidebar-icon">🌟</span>
             <span>Buff Sao</span>
           </span>
           <span class="sidebar-status-dot is-loading" id="dot_buff_sao" title="Đang đồng bộ trạng thái..."></span>
@@ -171,7 +173,7 @@
 
         <!-- QUẢN TRỊ ADMIN (ONLY VISIBLE FOR ADMIN — COMPLETELY HIDDEN FOR CTV) -->
         <div id="sidebarAdminSection" style="display:none;flex-direction:column;gap:4px;">
-          <div class="sidebar-section-label" style="color:#a78bfa;">QUẢN TRỊ ZNSTUDIO</div>
+          <div class="sidebar-section-label" style="color:#9b3765;">QUẢN TRỊ ZNSTUDIO</div>
           <button type="button" class="sidebar-item" data-view="admin_monitor">
             <span class="sidebar-item-left"><span class="sidebar-icon">🛡️</span><span>Giám sát & đối soát CTV</span></span>
           </button>
@@ -240,7 +242,7 @@
   <div class="modal-overlay" id="appModalOverlay" style="display:none;">
     <div class="modal-box" id="appModalBox" role="dialog" aria-modal="true" aria-labelledby="appModalTitle">
       <div class="modal-heading">
-        <h3 style="font-family:var(--font-display);font-size:18px;font-weight:600;color:#fff;" id="appModalTitle">
+        <h3 style="font-family:var(--font-display);font-size:18px;font-weight:600;color:var(--color-pure-white);" id="appModalTitle">
           Thêm đơn hàng
         </h3>
         <button type="button" class="btn-frost" id="btnCloseAppModal" style="padding:5px 10px;font-size:12px;">

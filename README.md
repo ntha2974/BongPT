@@ -2,6 +2,8 @@
 
 Ứng dụng Node.js / Express quản lý đơn Play Together và tài khoản CTV.
 
+Kho triển khai mới là [ntha2974/BongPT](https://github.com/ntha2974/BongPT), nhánh `main`. Sau khi đẩy mã, tạo project Neon cho BongPT. Trên Render chọn **New → Blueprint**, kết nối kho BongPT và nhập `DATABASE_URL` của project Neon mới. Blueprint dùng vùng Singapore. Tài khoản nguồn có thể nhập sau qua **Cấu hình Nguồn API** trong tài khoản admin.
+
 ## Chạy tại máy
 
 Yêu cầu Node.js từ 22.16 trở lên. Phiên bản được kiểm tra: 24.15.0.
@@ -41,10 +43,10 @@ hiện có bằng chức năng trong giao diện admin.
 Biến tài khoản nguồn, khi có giá trị, được ưu tiên hơn cấu hình đã lưu trong database.
 Nếu thay tài khoản nguồn qua Environment trên Render, cần triển khai lại dịch vụ.
 
-## Chuyển dữ liệu hiện có sang Neon (Miễn phí vĩnh viễn)
+## Chuyển dữ liệu hiện có sang Neon
 
 ### Cách nhanh nhất (Cửa hàng mới hoặc muốn giữ dữ liệu từ giờ trở đi)
-1. Đăng ký miễn phí tại [neon.tech](https://neon.tech) (không cần thẻ tín dụng, miễn phí 0.5 GB & 100 CU-giờ/tháng — quá dư cho dưới 10 CTV).
+1. Đăng nhập [Neon Console](https://console.neon.tech) và chọn tổ chức dùng cho dự án.
 2. Tạo Project mới → bấm **Connect** → copy chuỗi `DATABASE_URL` (`postgresql://...`).
 3. Dán `DATABASE_URL` vào **Render → Environment** (đảm bảo đã có `ADMIN_PASSWORD`) → Deploy lại.
 4. Hệ thống sẽ tự khởi tạo bảng PostgreSQL lần đầu. Kiểm tra `/api/health` thấy `storage: "postgresql"`. Từ lúc này toàn bộ tài khoản CTV, số dư ví, đơn hàng và bảng giá sẽ **không bao giờ bị mất** khi Render ngủ hoặc tắt.

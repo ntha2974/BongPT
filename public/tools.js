@@ -144,21 +144,21 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
           <tr>
             <td style="white-space:nowrap;font-size:12px;">${date(o.createdAt)}</td>
             <td>
-              <strong style="color:#fff;">${esc(o.categoryName || CAT_LABELS[o.category] || o.category)}</strong>
+              <strong style="color:var(--color-pure-white);">${esc(o.categoryName || CAT_LABELS[o.category] || o.category)}</strong>
               <div class="tool-note">#${esc(o.remoteOrderId || o.id)}</div>
             </td>
             <td>
-              <strong style="color:#fff;">${esc(o.customer?.nickname || 'Chưa gán khách')}</strong>
+              <strong style="color:var(--color-pure-white);">${esc(o.customer?.nickname || 'Chưa gán khách')}</strong>
               ${o.customer?.suid ? `<div class="tool-note">SUID: ${esc(o.customer.suid)}</div>` : ''}
             </td>
             <td>
               <span class="badge-tag">${esc(o.summary || '—')}</span>
               ${o.trackUrl ? `<div class="tool-note" style="max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(o.trackUrl.replace(/^https?:\/\//, ''))}</div>` : ''}
             </td>
-            <td><strong style="color:#fbbf24;">${money(o.sellPrice)}</strong></td>
+            <td><strong style="color:#895d0a;">${money(o.sellPrice)}</strong></td>
             <td>
               <div style="font-size:12px;color:var(--color-moon-mist);">Gốc: ${money(o.costPrice)}</div>
-              <div style="font-size:11px;color:#4ade80;font-weight:600;">Lãi: +${money(o.markupAmount)}</div>
+              <div style="font-size:11px;color:#28754e;font-weight:600;">Lãi: +${money(o.markupAmount)}</div>
             </td>
             <td>${stBadge}</td>
           </tr>
@@ -198,8 +198,8 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
         <tr>
           <td style="white-space:nowrap;font-size:12px;">${date(tx.createdAt)}</td>
           <td>${trxLabels[tx.type] || `<span class="badge-tag">${esc(tx.type)}</span>`}</td>
-          <td style="font-weight:700;color:${Number(tx.amount) >= 0 ? '#4ade80' : '#f87171'};">${Number(tx.amount) >= 0 ? '+' : ''}${money(tx.amount)}</td>
-          <td style="font-weight:600;color:#fff;">${money(tx.balanceAfter)}</td>
+          <td style="font-weight:700;color:${Number(tx.amount) >= 0 ? '#28754e' : '#a8304c'};">${Number(tx.amount) >= 0 ? '+' : ''}${money(tx.amount)}</td>
+          <td style="font-weight:600;color:var(--color-pure-white);">${money(tx.balanceAfter)}</td>
           <td style="font-size:12px;color:var(--color-moon-mist);">${esc(tx.note || '—')}</td>
         </tr>
       `).join('');
@@ -223,22 +223,22 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:12px 0 16px;">
           <div class="stat-subcard">
             <div style="font-size:11px;color:var(--color-fog-veil);">Số dư ví hiện tại</div>
-            <div style="font-size:19px;font-weight:700;color:#4ade80;margin-top:4px;">${money(sum.balance || 0)}</div>
+            <div style="font-size:19px;font-weight:700;color:#28754e;margin-top:4px;">${money(sum.balance || 0)}</div>
             <div class="tool-note">HĐ gần nhất: ${date(ctv.lastSeenAt)}</div>
           </div>
           <div class="stat-subcard">
             <div style="font-size:11px;color:var(--color-fog-veil);">Đơn hàng đã đặt</div>
-            <div style="font-size:19px;font-weight:700;color:#fff;margin-top:4px;">${Number(sum.orderCount || 0)} đơn</div>
+            <div style="font-size:19px;font-weight:700;color:var(--color-pure-white);margin-top:4px;">${Number(sum.orderCount || 0)} đơn</div>
             <div class="tool-note">Hoàn thành: ${Number(sum.completedCount || 0)} · Đang chạy: ${Number(sum.runningCount || 0)}</div>
           </div>
           <div class="stat-subcard">
             <div style="font-size:11px;color:var(--color-fog-veil);">Tổng tiền CTV đã mua</div>
-            <div style="font-size:19px;font-weight:700;color:#fbbf24;margin-top:4px;">${money(sum.totalSell || 0)}</div>
+            <div style="font-size:19px;font-weight:700;color:#895d0a;margin-top:4px;">${money(sum.totalSell || 0)}</div>
             <div class="tool-note">Tổng đã nạp: ${money(sum.totalTopup || 0)}</div>
           </div>
           <div class="stat-subcard">
             <div style="font-size:11px;color:var(--color-fog-veil);">Tổng lãi Admin từ CTV</div>
-            <div style="font-size:19px;font-weight:700;color:#c4b5fd;margin-top:4px;">+${money(sum.totalProfit || 0)}</div>
+            <div style="font-size:19px;font-weight:700;color:#95436c;margin-top:4px;">+${money(sum.totalProfit || 0)}</div>
             <div class="tool-note">Chi phí nguồn: ${money(sum.totalCost || 0)}</div>
           </div>
         </div>
@@ -266,8 +266,8 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
       const isSel = Boolean(selectedId && user.id === selectedId);
       const uid = user.id || '';
       return `<tr ${uid ? `data-select-ctv-row="${esc(uid)}" style="cursor:pointer;${isSel ? 'background:rgba(139,92,246,0.16);' : ''}"` : ''}>
-        <td><strong style="color:#fff;">${esc(user.name)}</strong><div class="tool-note">${esc(user.username)}</div></td>
-        <td><strong style="color:#4ade80;">${money(user.balance)}</strong></td>
+        <td><strong style="color:var(--color-pure-white);">${esc(user.name)}</strong><div class="tool-note">${esc(user.username)}</div></td>
+        <td><strong style="color:#28754e;">${money(user.balance)}</strong></td>
         <td>
           <strong>${Number(user.orderCount || 0)} đơn</strong>
           ${user.totalSell ? `<div class="tool-note">Mua: ${money(user.totalSell)} · Lãi: +${money(user.totalProfit || 0)}</div>` : ''}
