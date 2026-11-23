@@ -39,6 +39,9 @@ const state = {
   orders: [],
   adminOverview: null,
   adminMonitor: null,
+  pricingCtvId: '',
+  pricingCatalog: null,
+  pricingLoadError: '',
   adminPricingTab: 'categories', // 'categories' | 'packages' | 'fruits'
   adminPkgCatFilter: 'all',
   adminFruitFilter: 'all', // 'all' | 'custom'
@@ -299,6 +302,9 @@ function clearAuthState() {
   state.token = '';
   state.user = null;
   state.catalogData = null;
+  state.pricingCtvId = '';
+  state.pricingCatalog = null;
+  state.pricingLoadError = '';
   state.catalogWarning = '';
   state.ordersWarning = '';
   state.loadingCatalog = false;
@@ -3225,16 +3231,52 @@ function getAllAdminFixedPackages(r) {
   return fixedPackages;
 }
 
+function adminPricingCatalog() {
+  return state.pricingCtvId ? state.pricingCatalog : state.catalogData;
+}
+
+let pricingLoadVersion = 0;
+async function loadCtvPricing(ctvId, refresh = false) {
+  const version = ++pricingLoadVersion;
+  state.pricingCatalog = null;
+  state.pricingLoadError = '';
+  if (state.currentView === 'admin_pricing') renderCurrentView();
+  if (!ctvId) return;
+  try {
+    const result = await apiFetch('/api/catalog?ctvId=' + encodeURIComponent(ctvId) + (refresh ? '&refresh=1' : ''), 'GET', null, 6500);
+    if (version === pricingLoadVersion && ctvId === state.pricingCtvId) state.pricingCatalog = result;
+  } catch (err) {
+    if (version === pricingLoadVersion && ctvId === state.pricingCtvId) state.pricingLoadError = err.message;
+  }
+  if (version === pricingLoadVersion && state.currentView === 'admin_pricing') renderCurrentView();
+}
+
 function renderAdminPricingPageHtml() {
-  const r = state.catalogData;
+  const r = adminPricingCatalog();
   const adm = state.adminOverview;
+  const personal = Boolean(state.pricingCtvId);
+  const ctvs = (adm?.ctvs || []).filter(u => !u.archivedAt);
+  const missingCtv = personal && !ctvs.some(u => u.id === state.pricingCtvId);
+  const selector = `<div style="margin-bottom:16px;">
+    <label for="pricingCtvSelect">Áp dụng bảng giá cho</label>
+    <select class="input-box" id="pricingCtvSelect" style="display:block;max-width:360px;margin-top:6px;">
+      <option value="">Bảng giá chung</option>
+      ${missingCtv ? '<option selected disabled>CTV không còn trong danh sách</option>' : ''}
+      ${ctvs.map(u => `<option value="${escapeHtml(u.id)}" ${u.id === state.pricingCtvId ? 'selected' : ''}>${escapeHtml(u.name)} (@${escapeHtml(u.username)})</option>`).join('')}
+    </select>
+  </div>`;
+  if (missingCtv) return `<div class="glass-panel">${selector}</div>`;
+  if (personal && !r) {
+    return `<div class="glass-panel">${selector}<div role="status">${escapeHtml(state.pricingLoadError || 'Đang tải bảng giá CTV…')}</div>
+      ${state.pricingLoadError ? '<button type="button" class="btn-frost" id="btnRefreshAdminPricing">Thử lại</button>' : ''}</div>`;
+  }
   const fruits = r?.catalog?.fruit_by_fruit || [];
   const defaultFruitMarkup = adm?.settings?.defaultFruitUnitMarkup ?? 40;
   const cm = adm?.settings?.categoryMarkups || {};
   const modes = adm?.settings?.categoryMarkupModes || {};
   const percents = adm?.settings?.categoryMarkupPercents || {};
   const pkgOverrides = adm?.settings?.packagePriceOverrides || {};
-  const fruitOverrides = adm?.settings?.fruitUnitPrices || {};
+  const fruitOverrideCount = personal ? fruits.filter(f => f._admin?.has_custom_override).length : Object.keys(adm?.settings?.fruitUnitPrices || {}).length;
   const sysStatus = r?.systemStatus || {};
 
   const fixedPackages = getAllAdminFixedPackages(r);
@@ -3264,7 +3306,7 @@ function renderAdminPricingPageHtml() {
         <div>
           <span class="panel-title-text">🏷️ Tùy chỉnh Giá bán CTV cho từng Danh mục & Sản phẩm</span>
           <div style="font-size:12px;color:var(--color-fog-veil);margin-top:4px;">
-            Đồng bộ nguồn API lúc <strong style="color:#236f60;">${escapeHtml(syncedText)}</strong> · Hỗ trợ chỉnh <strong>+VNĐ (thủ công)</strong> hoặc <strong>+% (phần trăm)</strong> cho từng danh mục và từng gói riêng lẻ.
+            ${personal ? 'Sản phẩm chưa đặt giá riêng sẽ dùng bảng giá chung.' : `Đồng bộ nguồn API lúc <strong style="color:#236f60;">${escapeHtml(syncedText)}</strong> · Hỗ trợ chỉnh <strong>+VNĐ (thủ công)</strong> hoặc <strong>+% (phần trăm)</strong> cho từng danh mục và từng gói riêng lẻ.`}
           </div>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
@@ -3275,11 +3317,12 @@ function renderAdminPricingPageHtml() {
         </div>
       </div>
 
+      ${selector}
       <!-- Sub-navigation tabs -->
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px;">
-        <button type="button" class="btn-frost ${state.adminPricingTab === 'categories' ? 'is-active' : ''}" data-adm-ptab="categories">
+        ${personal ? '' : `<button type="button" class="btn-frost ${state.adminPricingTab === 'categories' ? 'is-active' : ''}" data-adm-ptab="categories">
           ⚙️ 1. Chỉnh giá từng Danh mục (VNĐ / %) — 8 danh mục
-        </button>
+        </button>`}
         <button type="button" class="btn-frost ${state.adminPricingTab === 'packages' ? 'is-active' : ''}" data-adm-ptab="packages">
           📦 2. Chỉnh từng Gói cố định (${fixedPackages.length} gói)
         </button>
@@ -3299,7 +3342,7 @@ function renderAdminPricingPageHtml() {
             const orderFeeVal = Number(cm.fruit_by_fruit ?? 0);
             const isWorking = !!sysStatus[cat.key];
             const overrideCount = cat.isFruitUnit
-              ? Object.keys(fruitOverrides).length
+              ? fruitOverrideCount
               : Object.keys(pkgOverrides).filter((k) => k.startsWith(`${cat.key}:`)).length;
             const sample = getCategorySampleItem(cat.key, r?.catalog);
             const sampleSell = sample ? computePreviewSell(sample.cost, mode, fixedVal, pctVal) : 0;
@@ -3436,7 +3479,7 @@ function renderAdminPricingPageHtml() {
                     <strong style="color:var(--color-pure-white);">${escapeHtml(p.name)}</strong>
                     ${p.isOnSale ? `<span class="badge-tag amber" style="margin-left:6px;">Sale</span>` : ''}
                     <div style="font-size:10.5px;color:${p.hasOverride ? '#895d0a' : '#236f60'};margin-top:2px;">
-                      ${p.hasOverride ? 'Giá cố định riêng' : modes[p.catKey] === 'percent' ? `Tự động (+${percents[p.catKey] ?? 0}%)` : `Tự động (+${formatVnd(cm[p.catKey] ?? 5000)})`}
+                      ${p.hasOverride ? 'Giá cố định riêng' : personal ? 'Theo bảng giá chung' : modes[p.catKey] === 'percent' ? `Tự động (+${percents[p.catKey] ?? 0}%)` : `Tự động (+${formatVnd(cm[p.catKey] ?? 5000)})`}
                     </div>
                   </td>
                   <td>
@@ -3463,7 +3506,7 @@ function renderAdminPricingPageHtml() {
                   <td>
                     <div style="display:flex;gap:6px;flex-wrap:wrap;">
                       <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11.5px;" data-save-pkg-row="${p.key}">✓ Cập nhật</button>
-                      ${p.hasOverride ? `<button type="button" class="btn-frost" style="padding:5px 10px;font-size:11px;" data-reset-pkg-override="${p.key}">↺ Tự động</button>` : ''}
+                      ${p.hasOverride ? `<button type="button" class="btn-frost" style="padding:5px 10px;font-size:11px;" data-reset-pkg-override="${p.key}">↺ ${state.pricingCtvId ? 'Dùng giá chung' : 'Tự động'}</button>` : ''}
                     </div>
                   </td>
                 </tr>
@@ -3477,7 +3520,7 @@ function renderAdminPricingPageHtml() {
       `
           : `
         <div style="background:rgba(102,58,243,0.12);padding:14px 16px;border-radius:10px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          ${personal ? '' : `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
             <span style="font-size:13px;color:var(--color-pure-white);font-weight:600;">Mức chung cho trái chưa chỉnh riêng:</span>
             <div class="pricing-mode-switch">
               <button type="button" class="pricing-mode-btn ${fruitMode === 'fixed' ? 'is-active' : ''}" id="btnFruitBarModeFixed">+VNĐ/trái</button>
@@ -3486,19 +3529,19 @@ function renderAdminPricingPageHtml() {
             <input type="number" id="admFruitGeneralValInput" class="input-box" style="width:110px;" value="${fruitMode === 'percent' ? fruitPercent : defaultFruitMarkup}" step="${fruitMode === 'percent' ? 1 : 10}" min="0" max="${fruitMode === 'percent' ? 500 : 1000000}" />
             <span id="admFruitGeneralUnit" style="font-size:12px;color:var(--color-moon-mist);">${fruitMode === 'percent' ? '%' : 'đ / trái'}</span>
             ${
-              Object.keys(fruitOverrides).length > 0
+              fruitOverrideCount > 0
                 ? `<label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#895d0a;cursor:pointer;">
                     <input type="checkbox" id="admFruitApplyAllOverrides" checked />
-                    <span>Áp dụng luôn cho ${Object.keys(fruitOverrides).length} trái đang đặt giá riêng</span>
+                    <span>Áp dụng luôn cho ${fruitOverrideCount} trái đang đặt giá riêng</span>
                   </label>`
                 : ''
             }
             <button type="button" class="btn-violet" id="btnSaveFruitGeneral" style="padding:7px 14px;font-size:12px;">✓ Cập nhật mức chung</button>
-          </div>
+          </div>`}
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <select id="admFruitFilterSelect" class="input-box" style="width:auto;">
               <option value="all" ${state.adminFruitFilter === 'all' ? 'selected' : ''}>Tất cả (${fruits.length})</option>
-              <option value="custom" ${state.adminFruitFilter === 'custom' ? 'selected' : ''}>Đang đặt giá riêng (${Object.keys(fruitOverrides).length})</option>
+              <option value="custom" ${state.adminFruitFilter === 'custom' ? 'selected' : ''}>Đang đặt giá riêng (${fruitOverrideCount})</option>
             </select>
             <input type="text" id="admFruitSearchInput" class="input-box" style="width:230px;" placeholder="🔍 Tìm trái cây: Nhân sâm..." value="${escapeHtml(state.adminFruitSearch)}" />
           </div>
@@ -3552,7 +3595,7 @@ function renderAdminFruitRowsHtml(fruits) {
               <div>
                 <strong style="color:var(--color-pure-white);">${escapeHtml(f.name)}</strong>
                 <div style="font-size:10.5px;color:${hasOverride ? '#895d0a' : '#236f60'};">
-                  ${hasOverride ? 'Giá cố định riêng' : fruitMode === 'percent' ? `Tự động (+${fruitPct}%)` : `Tự động (+${formatVnd(defMk)})`}
+                  ${hasOverride ? 'Giá cố định riêng' : state.pricingCtvId ? 'Theo bảng giá chung' : fruitMode === 'percent' ? `Tự động (+${fruitPct}%)` : `Tự động (+${formatVnd(defMk)})`}
                 </div>
               </div>
             </div>
@@ -3579,7 +3622,7 @@ function renderAdminFruitRowsHtml(fruits) {
           <td>
             <div style="display:flex;gap:6px;flex-wrap:wrap;">
               <button type="button" class="btn-violet" style="padding:5px 10px;font-size:11px;" data-save-fruit-row="${f.id}">✓ Cập nhật</button>
-              ${hasOverride ? `<button type="button" class="btn-frost" style="padding:5px 8px;font-size:11px;" data-reset-fruit-override="${f.id}">↺ Tự động</button>` : ''}
+              ${hasOverride ? `<button type="button" class="btn-frost" style="padding:5px 8px;font-size:11px;" data-reset-fruit-override="${f.id}">↺ ${state.pricingCtvId ? 'Dùng giá chung' : 'Tự động'}</button>` : ''}
               <button type="button" class="btn-frost" style="padding:5px 9px;font-size:11px;" data-open-mut-pricing="${f.id}">
                 19 đột biến
               </button>
@@ -3592,6 +3635,14 @@ function renderAdminFruitRowsHtml(fruits) {
 }
 
 async function savePricingSettingsAndReload(payload, successMsg) {
+  const ctvId = state.pricingCtvId;
+  if (ctvId) {
+    await apiFetch('/api/admin/ctv/' + encodeURIComponent(ctvId) + '/pricing', 'PUT', payload);
+    const ctv = state.adminOverview?.ctvs?.find(u => u.id === ctvId);
+    showToast('Đã lưu bảng giá của ' + (ctv?.username || 'CTV') + '.');
+    if (ctvId === state.pricingCtvId) await loadCtvPricing(ctvId);
+    return;
+  }
   const r = await apiFetch('/api/admin/settings', 'PUT', payload);
   showToast(successMsg || r.message || 'Đã cập nhật bảng giá thành công!');
   await Promise.all([loadCatalog(true), loadAdminOverview()]);
@@ -3709,9 +3760,20 @@ function buildCategoryPayload(catKey) {
 
 let admFruitSearchTimer = null;
 function bindAdminPricingEvents() {
+  document.getElementById('pricingCtvSelect')?.addEventListener('change', e => {
+    const select = e.currentTarget;
+    if (select.closest('.glass-panel')?.querySelector('[data-dirty="1"]') && !window.confirm('Bỏ thay đổi chưa lưu để chuyển bảng giá?')) {
+      select.value = state.pricingCtvId;
+      return;
+    }
+    state.pricingCtvId = select.value;
+    if (select.value && state.adminPricingTab === 'categories') state.adminPricingTab = 'packages';
+    loadCtvPricing(select.value);
+  });
   document.getElementById('btnRefreshAdminPricing')?.addEventListener('click', async () => {
     const btn = document.getElementById('btnRefreshAdminPricing');
     if (btn) { btn.disabled = true; btn.textContent = '↻ Đang tải...'; }
+    if (state.pricingCtvId) return loadCtvPricing(state.pricingCtvId, true);
     showToast('Đang tải giá gốc mới nhất từ nguồn API...');
     await Promise.all([loadCatalog(true), loadAdminOverview()]);
     renderCurrentView();
@@ -3944,7 +4006,7 @@ function bindAdminPricingEvents() {
     admFruitSearchTimer = setTimeout(() => {
       const tbody = document.getElementById('admFruitTbody');
       if (!tbody) return;
-      const fruits = state.catalogData?.catalog?.fruit_by_fruit || [];
+      const fruits = adminPricingCatalog()?.catalog?.fruit_by_fruit || [];
       const q = state.adminFruitSearch.trim().toLowerCase();
       const filtered = fruits.filter((f) => {
         if (state.adminFruitFilter === 'custom' && !f._admin?.has_custom_override) return false;
@@ -4010,7 +4072,7 @@ function bindAdminPricingEvents() {
 }
 
 function openAdminMutationPricingModal(fruitId) {
-  const f = (state.catalogData?.catalog?.fruit_by_fruit || []).find((x) => Number(x.id) === Number(fruitId));
+  const f = (adminPricingCatalog()?.catalog?.fruit_by_fruit || []).find((x) => Number(x.id) === Number(fruitId));
   if (!f) return;
 
   const overlay = document.getElementById('appModalOverlay');
@@ -4020,7 +4082,8 @@ function openAdminMutationPricingModal(fruitId) {
   if (!overlay || !box || !title || !body) return;
 
   box.className = 'modal-box wide';
-  title.textContent = `Chỉnh giá 19 Hệ Đột Biến: ${f.name}`;
+  const ctv = state.adminOverview?.ctvs?.find(u => u.id === state.pricingCtvId);
+  title.textContent = `Chỉnh giá 19 Hệ Đột Biến: ${f.name}${ctv ? ' · @' + ctv.username : ''}`;
   const muts = f.mutation_prices || [];
 
   body.innerHTML = `
@@ -4059,7 +4122,7 @@ function openAdminMutationPricingModal(fruitId) {
                   <span style="width:10px;height:10px;border-radius:999px;background:${m.mutation_color};"></span>
                   <strong style="color:var(--color-pure-white);">${escapeHtml(m.mutation_name)}</strong>
                 </span>
-                <div style="font-size:10px;color:${hasOvr ? '#895d0a' : '#236f60'};margin-top:2px;">${hasOvr ? 'Giá cố định riêng' : 'Tự động'}</div>
+                <div style="font-size:10px;color:${hasOvr ? '#895d0a' : '#236f60'};margin-top:2px;">${hasOvr ? 'Giá cố định riêng' : state.pricingCtvId ? 'Theo giá trái và bảng giá chung' : 'Tự động'}</div>
               </td>
               <td>${formatVnd(cost)}</td>
               <td style="max-width:170px;">

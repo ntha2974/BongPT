@@ -828,6 +828,49 @@ test('per-category percentage and manual pricing modes work across packages, fru
   assert.ok(catFixed.body.pricingVersion > beforeVer);
 });
 
+test('CTV product prices stay with the selected account across catalog, preview, checkout and reset', async t => {
+  const server = await startTestServer(t, financeSource(), { seed: data => {
+    data.users.push({ ...data.users[1], id: 'second', username: 'second' });
+  } });
+  const admin = (await server.login('owner', 'owner-test-password')).body.token;
+  const other = (await server.login('second', 'seller-test-password')).body.token;
+  const { token, payload } = await prepareBuyer(server);
+  const path = '/api/admin/ctv/seller/pricing';
+  const changes = { packagePriceOverrides: { 'buff_tim:7': 21000 }, fruitUnitPrices: { 1: 300 }, fruitMutationPrices: { '1:1': 1700 } };
+  assert.equal((await server.request(path, 'PUT', other, changes)).status, 403);
+  assert.equal((await server.request('/api/admin/ctv/missing/pricing', 'PUT', admin, changes)).status, 404);
+  assert.equal((await server.request(path, 'PUT', admin, { ...changes, defaultMarkup: 1 })).status, 400);
+  assert.equal((await server.request(path, 'PUT', admin, changes)).status, 200);
+  assert.equal((await server.request('/api/catalog?ctvId=seller', 'GET', other)).status, 403);
+
+  const catalog = async (auth, query = '') => (await server.request('/api/catalog' + query, 'GET', auth)).body.catalog;
+  const scoped = await catalog(admin, '?ctvId=seller');
+  assert.equal(scoped.buff_tim[0]._admin.has_custom_override, true);
+  assert.equal(scoped.fruit_by_fruit[0].unit_price, 300);
+  assert.equal(scoped.fruit_by_fruit[0].mutation_prices[0].unit_price, 1700);
+  for (const auth of [token, other, token, admin]) {
+    const rows = await catalog(auth, '?scope=buff_tim&compact=1');
+    assert.equal(rows.buff_tim[0].total_price, auth === token ? 21000 : 15000);
+  }
+  const preview = await server.request('/api/catalog/preview-fruit', 'POST', token, { fruit_item_id: 1, total_cnt: 2, mutation_list: [1] });
+  assert.equal(preview.body.data.total_price, 3400 + server.db.settings.categoryMarkups.fruit_by_fruit);
+  const stale = await server.request('/api/orders/place', 'POST', token, payload);
+  assert.equal(stale.body.code, 'PRICE_CHANGED');
+  const placed = await server.request('/api/orders/place', 'POST', token, { ...payload, expected_price: 21000 });
+  assert.equal(placed.status, 200);
+  assert.equal(server.db.users.find(u => u.id === 'seller').balance, 29000);
+  assert.equal(server.db.localOrders[0].sellPrice, 21000);
+
+  await server.request('/api/admin/settings', 'PUT', admin, { packagePriceOverrides: { 'buff_tim:7': 18000 } });
+  assert.equal((await catalog(token)).buff_tim[0].total_price, 21000);
+  assert.equal((await catalog(other)).buff_tim[0].total_price, 18000);
+  assert.equal((await server.request(path, 'PUT', admin, { packagePriceOverrides: { 'buff_tim:7': null } })).status, 200);
+  const reset = await catalog(admin, '?ctvId=seller');
+  assert.equal(reset.buff_tim[0].total_price, 18000);
+  assert.equal(reset.buff_tim[0]._admin.has_custom_override, false);
+  assert.equal(reset.fruit_by_fruit[0].unit_price, 300);
+});
+
 test('passive CTV catalog reads reuse 10-minute cache while pre-order refresh fetches live upstream prices', async t => {
   let upstreamSettingsHits = 0;
   let livePrice = 10000;

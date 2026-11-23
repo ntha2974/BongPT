@@ -932,9 +932,10 @@ function validPercent(value) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 500;
 }
 
-function getPackageSellingPrice(categoryKey, pkgId, costEffective, costOriginal, tierMarkupPercent = 0) {
+function getPackageSellingPrice(categoryKey, pkgId, costEffective, costOriginal, tierMarkupPercent = 0, productPrices) {
   const pkgKey = `${categoryKey}:${pkgId}`;
-  const override = db.settings.packagePriceOverrides?.[pkgKey];
+  const personalPrice = productPrices?.packagePriceOverrides?.[pkgKey];
+  const override = personalPrice ?? db.settings.packagePriceOverrides?.[pkgKey];
   const catMode = db.settings.categoryMarkupModes?.[categoryKey] === 'percent' ? 'percent' : 'fixed';
   const catMarkup = Number(db.settings.categoryMarkups?.[categoryKey] ?? db.settings.defaultMarkup ?? 5000);
   const catPercent = Number(db.settings.categoryMarkupPercents?.[categoryKey] ?? 0);
@@ -970,15 +971,16 @@ function getPackageSellingPrice(categoryKey, pkgId, costEffective, costOriginal,
     sellEffective,
     sellOriginal,
     profit: sellEffective - adjustedCostEffective,
-    hasCustomOverride: hasOverride,
+    hasCustomOverride: productPrices ? personalPrice != null : hasOverride,
     markupMode: hasOverride ? 'override' : catMode,
   };
 }
 
-function getFruitUnitPricing(fruitItem) {
+function getFruitUnitPricing(fruitItem, productPrices) {
   const fid = String(fruitItem.id);
   const costBase = Number(fruitItem.base_price || 0);
-  const customUnit = db.settings.fruitUnitPrices?.[fid];
+  const personalUnit = productPrices?.fruitUnitPrices?.[fid];
+  const customUnit = personalUnit ?? db.settings.fruitUnitPrices?.[fid];
   const fruitMode = db.settings.categoryMarkupModes?.fruit_by_fruit === 'percent' ? 'percent' : 'fixed';
   const defaultFruitMarkup = Number(db.settings.defaultFruitUnitMarkup ?? 40);
   const fruitPercent = Number(db.settings.categoryMarkupPercents?.fruit_by_fruit ?? 0);
@@ -998,7 +1000,8 @@ function getFruitUnitPricing(fruitItem) {
   const mutations = (fruitItem.mutation_prices || []).map((mp) => {
     const mKey = `${fid}:${mp.mutation_key}`;
     const costMut = Number(mp.unit_price || 0);
-    const customMut = db.settings.fruitMutationPrices?.[mKey];
+    const personalMut = productPrices?.fruitMutationPrices?.[mKey];
+    const customMut = personalMut ?? db.settings.fruitMutationPrices?.[mKey];
     const hasCustomMut = customMut !== undefined && customMut !== null && customMut !== '' && Number(customMut) >= 0;
     const requestedMut = hasCustomMut
       ? Number(customMut)
@@ -1014,7 +1017,7 @@ function getFruitUnitPricing(fruitItem) {
       mutation_color: FRUIT_MUTATIONS[mp.mutation_key]?.color || '#b6d9fc',
       cost_unit_price: costMut,
       sell_unit_price: sellMut,
-      has_custom_override: hasCustomMut,
+      has_custom_override: productPrices ? personalMut != null : hasCustomMut,
     };
   });
 
@@ -1022,16 +1025,16 @@ function getFruitUnitPricing(fruitItem) {
     costBase,
     sellBase,
     profitPerFruit: sellBase - costBase,
-    hasCustomOverride: hasCustomUnit,
+    hasCustomOverride: productPrices ? personalUnit != null : hasCustomUnit,
     markupMode: hasCustomUnit ? 'override' : fruitMode,
     mutations,
   };
 }
 
 // Calculates exact CTV selling price for a fruit order (matching HoanNguyen's multi-mutation formula)
-function calculateFruitOrderSellingPrice(fruitItem, totalCnt, mutationList = []) {
+function calculateFruitOrderSellingPrice(fruitItem, totalCnt, mutationList = [], productPrices) {
   const qty = Math.max(1, Math.floor(Number(totalCnt || 1)));
-  const pricing = getFruitUnitPricing(fruitItem);
+  const pricing = getFruitUnitPricing(fruitItem, productPrices);
   const orderFee = Number(db.settings.categoryMarkups?.fruit_by_fruit ?? 0);
 
   const cleanMuts = Array.isArray(mutationList) ? mutationList.map(Number).filter(Boolean) : [];
@@ -1888,7 +1891,7 @@ function resolveActiveSale(pkg) {
   return { isOnSale, sale: primary };
 }
 
-function buildPublicPackage(pkg, categoryKey, isAdmin, tierMarkupPercent = 0) {
+function buildPublicPackage(pkg, categoryKey, isAdmin, tierMarkupPercent, productPrices) {
   if (!Number.isSafeInteger(Number(pkg.id)) || Number(pkg.id) <= 0) throw new Error('Mã gói nguồn không hợp lệ.');
   const { isOnSale, sale } = resolveActiveSale(pkg);
   const rawBaseCost = Number(pkg.original_price ?? pkg.total_price ?? 0);
@@ -1896,7 +1899,7 @@ function buildPublicPackage(pkg, categoryKey, isAdmin, tierMarkupPercent = 0) {
     isOnSale ? (pkg.effective_price ?? sale?.sale_price ?? pkg.total_price ?? 0) : (pkg.total_price ?? 0)
   );
 
-  const calc = getPackageSellingPrice(categoryKey, pkg.id, rawEffectiveCost, rawBaseCost, tierMarkupPercent);
+  const calc = getPackageSellingPrice(categoryKey, pkg.id, rawEffectiveCost, rawBaseCost, tierMarkupPercent, productPrices);
 
   const result = {
     id: Number(pkg.id),
@@ -1970,6 +1973,13 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
     if (isAdmin) lastAdminActivityAt = now;
     else lastCtvActivityAt = now;
 
+    let priceOwner = isAdmin ? null : user;
+    if (req.query.ctvId !== undefined) {
+      if (!isAdmin) return res.status(403).json({ success: false, message: 'Chỉ admin được chọn bảng giá CTV.' });
+      priceOwner = db.users.find(u => u.role === 'ctv' && !u.archivedAt && u.id === req.query.ctvId);
+      if (!priceOwner) return res.status(404).json({ success: false, message: 'Không tìm thấy CTV.' });
+    }
+
     const rawScope = typeof req.query.scope === 'string' ? req.query.scope.trim() : '';
     const scope = VALID_CATALOG_SCOPES.has(rawScope) ? rawScope : '';
     const compact = req.query.compact === '1' && !isAdmin;
@@ -1993,7 +2003,8 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
       ? await fetchScopedCatalogFromHoanNguyen(scope, { force, maxAgeMs, timeoutMs })
       : await fetchRawCatalogFromHoanNguyen(force, maxAgeMs, { includeAdminWeeklyLimit: isAdmin, timeoutMs });
 
-    const cacheKey = `${isAdmin ? 'admin' : 'ctv'}:${scope || 'all'}:${compact ? 'c' : 'f'}:${settingsVersion}:${raw.syncedAt}`;
+    const productPrices = priceOwner?.productPrices ?? (isAdmin && priceOwner ? {} : null);
+    const cacheKey = `${isAdmin ? 'admin' : 'ctv'}:${productPrices ? priceOwner.id : ''}:${scope || 'all'}:${compact ? 'c' : 'f'}:${settingsVersion}:${raw.syncedAt}`;
     const memoized = catalogResponseCache.get(cacheKey);
     if (memoized) {
       return sendPackedCatalog(req, res, memoized);
@@ -2026,10 +2037,10 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
     // 1. Fruit Coin Packages
     if (want('fruit_coin')) {
       catalog.fruit_coin = raw.fruitCoinPackages.map((pkg) => {
-        const basePkg = buildPublicPackage(pkg, 'fruit_coin', isAdmin, 0);
+        const basePkg = buildPublicPackage(pkg, 'fruit_coin', isAdmin, 0, productPrices);
         const pricesByTier = {};
         for (const tier of coinTiers) {
-          const tPkg = buildPublicPackage(pkg, 'fruit_coin', isAdmin, Number(tier.markup_percent || 0));
+          const tPkg = buildPublicPackage(pkg, 'fruit_coin', isAdmin, Number(tier.markup_percent || 0), productPrices);
           pricesByTier[tier.min_coin] = {
             min_coin: tier.min_coin,
             markup_percent: tier.markup_percent,
@@ -2057,7 +2068,7 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
         const iconPath = fi.item?.icon_path_and_name
           ? `/assets/playtogether/images/${fi.item.icon_path_and_name.replace(/^\/+/, '').replace(/\.png$/i, '')}.png`
           : null;
-        const fPricing = getFruitUnitPricing(fi);
+        const fPricing = getFruitUnitPricing(fi, productPrices);
 
         const itemObj = {
           id: fi.id,
@@ -2102,13 +2113,13 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
 
     // 3-5. Buff Tim, Buff Sao, Guestbook
     if (want('buff_tim')) {
-      catalog.buff_tim = raw.buffTimPackages.map((pkg) => buildPublicPackage(pkg, 'buff_tim', isAdmin, 0));
+      catalog.buff_tim = raw.buffTimPackages.map((pkg) => buildPublicPackage(pkg, 'buff_tim', isAdmin, 0, productPrices));
     }
     if (want('buff_sao')) {
-      catalog.buff_sao = raw.buffSaoPackages.map((pkg) => buildPublicPackage(pkg, 'buff_sao', isAdmin, 0));
+      catalog.buff_sao = raw.buffSaoPackages.map((pkg) => buildPublicPackage(pkg, 'buff_sao', isAdmin, 0, productPrices));
     }
     if (want('guestbook')) {
-      catalog.guestbook = raw.guestbookPackages.map((pkg) => buildPublicPackage(pkg, 'guestbook', isAdmin, 0));
+      catalog.guestbook = raw.guestbookPackages.map((pkg) => buildPublicPackage(pkg, 'guestbook', isAdmin, 0, productPrices));
     }
 
     // 6. Active Farm Gifts & Mail Gifts (Exact match with HoanNguyen active=1)
@@ -2121,7 +2132,7 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
             : null;
           const packages = (g.gift_plants || [])
             .filter((gp) => enabled(gp.is_active))
-            .map((gp) => buildPublicPackage(gp, catKey, isAdmin, 0));
+            .map((gp) => buildPublicPackage(gp, catKey, isAdmin, 0, productPrices));
           return {
             id: g.id,
             name: g.item?.name || `Quà #${g.id}`,
@@ -2141,7 +2152,7 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
       catalog.weather_buff = raw.weatherPackages
         .filter((pkg) => enabled(pkg.is_active))
         .sort((a, b) => Number(a.quantity || 0) - Number(b.quantity || 0))
-        .map((pkg) => buildPublicPackage(pkg, 'weather_buff', isAdmin, 0));
+        .map((pkg) => buildPublicPackage(pkg, 'weather_buff', isAdmin, 0, productPrices));
 
       catalog.weather_buff_types = (raw.weatherTypes || [])
         .filter((wt) => enabled(wt.is_active))
@@ -2215,7 +2226,7 @@ app.post('/api/catalog/preview-fruit', requireAuth, limitInteractive, async (req
     }, true, 5500);
 
     const costPrice = Number(previewRes?.data?.total_price ?? 0);
-    const sellPrice = calculateFruitOrderSellingPrice(fi, qty, muts);
+    const sellPrice = calculateFruitOrderSellingPrice(fi, qty, muts, user.productPrices);
     if (!validMoney(costPrice) || !validMoney(sellPrice, false) || sellPrice < costPrice) {
       throw new Error('Bảng giá chưa hợp lệ hoặc giá bán thấp hơn chi phí nguồn. Liên hệ admin để cập nhật giá.');
     }
@@ -2526,7 +2537,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
         isOnSale ? (pkg.effective_price ?? sale?.sale_price ?? pkg.total_price) : pkg.total_price
       );
 
-      const calc = getPackageSellingPrice('fruit_coin', pkg.id, rawEffectiveCost, rawBaseCost, tierMarkup);
+      const calc = getPackageSellingPrice('fruit_coin', pkg.id, rawEffectiveCost, rawBaseCost, tierMarkup, user.productPrices);
       costPrice = calc.costEffective;
       sellPrice = calc.sellEffective;
 
@@ -2561,7 +2572,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
         mutation_list: muts,
       });
       costPrice = Number(preview?.data?.total_price ?? 0);
-      sellPrice = calculateFruitOrderSellingPrice(fi, qty, muts);
+      sellPrice = calculateFruitOrderSellingPrice(fi, qty, muts, user.productPrices);
 
       const mutNames = muts.map((m) => FRUIT_MUTATIONS[m]?.name || m).join(', ');
       orderSummary = `${qty.toLocaleString('vi-VN')} trái ${fi?.item?.name || `#${fruit_item_id}`}${
@@ -2588,7 +2599,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
       const { isOnSale, sale } = resolveActiveSale(pkg);
       const useSale = expect_sale !== false && isOnSale && sale;
       const rawEffective = Number(useSale ? (pkg.effective_price ?? sale.sale_price) : pkg.total_price);
-      const calc = getPackageSellingPrice('buff_tim', pkg.id, rawEffective, pkg.original_price ?? pkg.total_price, 0);
+      const calc = getPackageSellingPrice('buff_tim', pkg.id, rawEffective, pkg.original_price ?? pkg.total_price, 0, user.productPrices);
       costPrice = calc.costEffective;
       sellPrice = calc.sellEffective;
       orderSummary = `Buff ${Number(pkg.quantity).toLocaleString('vi-VN')} Tim${useSale ? ' (Sale)' : ''}`;
@@ -2609,7 +2620,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
       if (!pkg || !enabled(pkg.is_active)) {
         return res.status(400).json({ success: false, message: 'Gói Buff Sao không hợp lệ.' });
       }
-      const calc = getPackageSellingPrice('buff_sao', pkg.id, pkg.total_price, pkg.total_price, 0);
+      const calc = getPackageSellingPrice('buff_sao', pkg.id, pkg.total_price, pkg.total_price, 0, user.productPrices);
       costPrice = calc.costEffective;
       sellPrice = calc.sellEffective;
       orderSummary = `Buff ${Number(pkg.quantity).toLocaleString('vi-VN')} Sao`;
@@ -2631,7 +2642,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
       if (typeof guest_book_message !== 'string' || !guest_book_message.trim() || guest_book_message.length > 100) {
         return res.status(400).json({ success: false, message: 'Vui lòng nhập nội dung bài viết lưu bút.' });
       }
-      const calc = getPackageSellingPrice('guestbook', pkg.id, pkg.total_price, pkg.total_price, 0);
+      const calc = getPackageSellingPrice('guestbook', pkg.id, pkg.total_price, pkg.total_price, 0, user.productPrices);
       costPrice = calc.costEffective;
       sellPrice = calc.sellEffective;
       orderSummary = `Bài viết ${Number(pkg.quantity).toLocaleString('vi-VN')} lượt`;
@@ -2657,7 +2668,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
       const { isOnSale, sale } = resolveActiveSale(plantPkg);
       const useSale = expect_sale !== false && isOnSale && sale;
       const rawEffective = Number(useSale ? (plantPkg.effective_price ?? sale.sale_price) : plantPkg.total_price);
-      const calc = getPackageSellingPrice(category, plantPkg.id, rawEffective, plantPkg.original_price ?? plantPkg.total_price, 0);
+      const calc = getPackageSellingPrice(category, plantPkg.id, rawEffective, plantPkg.original_price ?? plantPkg.total_price, 0, user.productPrices);
       costPrice = calc.costEffective;
       sellPrice = calc.sellEffective;
       orderSummary = `${gift.item?.name || 'Quà'} × ${Number(plantPkg.quantity).toLocaleString('vi-VN')}`;
@@ -2686,7 +2697,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
       const rawEffectiveCost = Number(
         useSale ? (pkg.effective_price ?? sale.sale_price ?? pkg.total_price) : pkg.total_price
       );
-      const calc = getPackageSellingPrice('weather_buff', pkg.id, rawEffectiveCost, rawBaseCost, 0);
+      const calc = getPackageSellingPrice('weather_buff', pkg.id, rawEffectiveCost, rawBaseCost, 0, user.productPrices);
       costPrice = calc.costEffective;
       sellPrice = calc.sellEffective;
       orderSummary = `Gói ${Number(pkg.quantity).toLocaleString('vi-VN')} lần (Chưa chọn thời tiết)${useSale ? ' [Sale]' : ''}`;
@@ -4031,7 +4042,7 @@ app.post('/api/admin/backup/import', requireAdmin, express.json({ limit: '10mb' 
   });
 }));
 
-app.put('/api/admin/settings', requireAdmin, asyncRoute(async (req, res) => {
+app.put(['/api/admin/settings', '/api/admin/ctv/:id/pricing'], requireAdmin, asyncRoute(async (req, res) => {
   try {
     const {
       defaultMarkup,
@@ -4048,6 +4059,15 @@ app.put('/api/admin/settings', requireAdmin, asyncRoute(async (req, res) => {
       sourceEmail,
       sourcePassword,
     } = req.body || {};
+    const productTables = { packagePriceOverrides, fruitUnitPrices, fruitMutationPrices };
+    let ctv;
+    if (req.params.id !== undefined) {
+      ctv = db.users.find(u => u.id === req.params.id && u.role === 'ctv' && !u.archivedAt);
+      if (!ctv) return res.status(404).json({ success: false, message: 'Không tìm thấy CTV.' });
+      if (Object.keys(req.body || {}).some(key => !Object.hasOwn(productTables, key))) {
+        throw new Error('Bảng giá riêng chỉ áp dụng cho sản phẩm của CTV đã chọn.');
+      }
+    }
     const upstreamEmail = sourceEmail !== undefined ? sourceEmail : hoanNguyenEmail;
     const upstreamPassword = sourcePassword !== undefined ? sourcePassword : hoanNguyenPassword;
 
@@ -4132,33 +4152,20 @@ app.put('/api/admin/settings', requireAdmin, asyncRoute(async (req, res) => {
         }
       }
     }
-    if (packagePriceOverrides && typeof packagePriceOverrides === 'object') {
-      for (const [k, v] of Object.entries(packagePriceOverrides)) {
-        if (v === null || v === '' || Number(v) <= 0) {
-          delete db.settings.packagePriceOverrides[k];
+    const target = ctv ? (ctv.productPrices ??= {}) : db.settings;
+    for (const [table, changes] of Object.entries(productTables)) {
+      if (!changes) continue;
+      const prices = target[table] ??= {};
+      for (const [key, value] of Object.entries(changes)) {
+        if (value === null || value === '' || (table === 'packagePriceOverrides' && value === 0)) {
+          delete prices[key];
         } else {
-          db.settings.packagePriceOverrides[k] = Math.round(Number(v));
+          prices[key] = value;
         }
       }
+      if (ctv && !Object.keys(prices).length) delete target[table];
     }
-    if (fruitUnitPrices && typeof fruitUnitPrices === 'object') {
-      for (const [k, v] of Object.entries(fruitUnitPrices)) {
-        if (v === null || v === '' || Number(v) < 0) {
-          delete db.settings.fruitUnitPrices[k];
-        } else {
-          db.settings.fruitUnitPrices[k] = Math.round(Number(v));
-        }
-      }
-    }
-    if (fruitMutationPrices && typeof fruitMutationPrices === 'object') {
-      for (const [k, v] of Object.entries(fruitMutationPrices)) {
-        if (v === null || v === '' || Number(v) < 0) {
-          delete db.settings.fruitMutationPrices[k];
-        } else {
-          db.settings.fruitMutationPrices[k] = Math.round(Number(v));
-        }
-      }
-    }
+    if (ctv && !Object.keys(target).length) delete ctv.productPrices;
 
     let needRelogin = false;
     if (upstreamEmail && upstreamEmail.trim() !== db.settings.hoanNguyen.email) {
