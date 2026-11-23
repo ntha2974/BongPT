@@ -88,8 +88,8 @@ test('HTTP service restores an imported wallet, session and pending hold after r
     }
   }
   t.after(async () => { await stop(); await fs.rm(dataDir, { recursive: true, force: true }); });
-  const request = (route, token, body) => fetch('http://127.0.0.1:' + port + route, {
-    method: body ? 'POST' : 'GET', headers: { authorization: 'Bearer ' + (token || ''), 'content-type': 'application/json' },
+  const request = (route, token, body, method = body ? 'POST' : 'GET') => fetch('http://127.0.0.1:' + port + route, {
+    method, headers: { authorization: 'Bearer ' + (token || ''), 'content-type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
   });
   async function start() {
@@ -130,6 +130,8 @@ test('HTTP service restores an imported wallet, session and pending hold after r
   assert.equal(headPing.status, 200);
   const login = await (await request('/api/auth/login', '', { identifier: 'owner', password })).json();
   assert.ok(login.token);
+  const categoryRules = { buff_tim: { mode: 'percent', fixed: 0, percent: 12.5 } };
+  assert.equal((await request('/api/admin/ctv/u/pricing', login.token, { categoryRules }, 'PUT')).status, 200);
   const payload = { amount: 2500, idempotency_key: randomUUID() };
   const credits = await Promise.all([1, 2].map(() => request('/api/admin/ctv/u/balance', login.token, payload)));
   assert.deepEqual(credits.map(r => r.status).sort(), [200, 409]);
@@ -148,6 +150,7 @@ test('HTTP service restores an imported wallet, session and pending hold after r
     return (await response.json()).backup;
   };
   const backup = await exportData();
+  assert.deepEqual(backup.users.find(u => u.id === 'u').productPrices.categoryRules, categoryRules);
   assert.equal(backup.settings.brandName, 'ebongiu');
   assert.equal(backup.transactions.length, 1);
   assert.equal(backup.localOrders[0].id, 'ZNP-legacy-order');

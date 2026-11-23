@@ -19,6 +19,7 @@ const state = {
   token: sessionStorage.getItem('ebongiu_token') || '',
   user: null,
   catalogData: null,
+  lastFullPricingVersion: null,
   catalogWarning: '',
   ordersWarning: '',
   loadingCatalog: false,
@@ -302,6 +303,7 @@ function clearAuthState() {
   state.token = '';
   state.user = null;
   state.catalogData = null;
+  state.lastFullPricingVersion = null;
   state.pricingCtvId = '';
   state.pricingCatalog = null;
   state.pricingLoadError = '';
@@ -358,6 +360,7 @@ function saveCachedCatalog(data) {
 }
 
 function isUserTypingOrModalOpen() {
+  if (state.currentView === 'admin_pricing' && document.querySelector?.('[data-cat-card][data-dirty="1"]')) return true;
   const modal = document.getElementById('appModalOverlay');
   if (modal && modal.style.display !== 'none') return true;
   const active = typeof document !== 'undefined' ? document.activeElement : null;
@@ -545,11 +548,14 @@ async function loadCatalog(forceRefresh = false, scope = '', timeoutMs = 6500) {
     if (!r.success || state.token !== requestToken) return false;
 
     const prev = state.catalogData;
+    if (prev && r.pricingVersion < prev.pricingVersion) return false;
+    if (!r.partialScope) state.lastFullPricingVersion = r.pricingVersion;
     const merged = r.partialScope && prev
       ? {
           ...prev,
           syncedAt: r.syncedAt || prev.syncedAt,
           pricingVersion: r.pricingVersion ?? prev.pricingVersion,
+          fruitOrderFee: r.fruitOrderFee ?? prev.fruitOrderFee,
           systemStatus: r.systemStatus || prev.systemStatus,
           hnSettings: r.hnSettings || prev.hnSettings,
           coinStock: r.coinStock !== undefined ? r.coinStock : prev.coinStock,
@@ -1896,14 +1902,15 @@ function estimateFruitOrderPriceLocally(fruitItem, qty, muts) {
   if (!fruitItem) return 0;
   const base = Number(fruitItem.unit_price || 0);
   const cleanQty = Math.max(1, Math.floor(Number(qty || 1)));
-  if (!muts || muts.length === 0) return cleanQty * base;
+  const orderFee = Number(state.catalogData?.fruitOrderFee ?? 0);
+  if (!muts || muts.length === 0) return cleanQty * base + orderFee;
   let sumMut = 0;
   for (const mk of muts) {
     const m = (fruitItem.mutation_prices || []).find(x => Number(x.mutation_key) === Number(mk));
-    sumMut += m ? Number(m.unit_price || base) : base;
+    sumMut += Number(m?.unit_price ?? base);
   }
   const combined = Math.max(base, sumMut - (muts.length - 1) * base);
-  return cleanQty * combined;
+  return cleanQty * combined + orderFee;
 }
 
 let modalPreviewTimer = null;
@@ -3306,7 +3313,7 @@ function renderAdminPricingPageHtml() {
         <div>
           <span class="panel-title-text">🏷️ Tùy chỉnh Giá bán CTV cho từng Danh mục & Sản phẩm</span>
           <div style="font-size:12px;color:var(--color-fog-veil);margin-top:4px;">
-            ${personal ? 'Sản phẩm chưa đặt giá riêng sẽ dùng bảng giá chung.' : `Đồng bộ nguồn API lúc <strong style="color:#236f60;">${escapeHtml(syncedText)}</strong> · Hỗ trợ chỉnh <strong>+VNĐ (thủ công)</strong> hoặc <strong>+% (phần trăm)</strong> cho từng danh mục và từng gói riêng lẻ.`}
+            ${personal ? 'CTV dùng giá sản phẩm riêng trước, sau đó đến giá danh mục riêng. Các mục còn lại dùng bảng giá chung.' : `Đồng bộ nguồn API lúc <strong style="color:#236f60;">${escapeHtml(syncedText)}</strong> · Hỗ trợ chỉnh <strong>+VNĐ (thủ công)</strong> hoặc <strong>+% (phần trăm)</strong> cho từng danh mục và từng gói riêng lẻ.`}
           </div>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
@@ -3320,9 +3327,9 @@ function renderAdminPricingPageHtml() {
       ${selector}
       <!-- Sub-navigation tabs -->
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px;">
-        ${personal ? '' : `<button type="button" class="btn-frost ${state.adminPricingTab === 'categories' ? 'is-active' : ''}" data-adm-ptab="categories">
+        <button type="button" class="btn-frost ${state.adminPricingTab === 'categories' ? 'is-active' : ''}" data-adm-ptab="categories">
           ⚙️ 1. Chỉnh giá từng Danh mục (VNĐ / %) — 8 danh mục
-        </button>`}
+        </button>
         <button type="button" class="btn-frost ${state.adminPricingTab === 'packages' ? 'is-active' : ''}" data-adm-ptab="packages">
           📦 2. Chỉnh từng Gói cố định (${fixedPackages.length} gói)
         </button>
@@ -3336,14 +3343,15 @@ function renderAdminPricingPageHtml() {
           ? `
         <div class="pricing-cat-grid">
           ${PRICING_CATEGORIES.map((cat) => {
-            const mode = modes[cat.key] === 'percent' ? 'percent' : 'fixed';
-            const fixedVal = cat.isFruitUnit ? defaultFruitMarkup : Number(cm[cat.key] ?? 5000);
-            const pctVal = Number(percents[cat.key] ?? 0);
-            const orderFeeVal = Number(cm.fruit_by_fruit ?? 0);
+            const rule = r?.categoryPricing?.[cat.key];
+            const mode = rule?.mode ?? (modes[cat.key] === 'percent' ? 'percent' : 'fixed');
+            const fixedVal = rule?.fixed ?? (cat.isFruitUnit ? defaultFruitMarkup : Number(cm[cat.key] ?? 5000));
+            const pctVal = rule?.percent ?? Number(percents[cat.key] ?? 0);
+            const orderFeeVal = rule?.orderFee ?? Number(cm.fruit_by_fruit ?? 0);
             const isWorking = !!sysStatus[cat.key];
-            const overrideCount = cat.isFruitUnit
+            const overrideCount = rule?.productCount ?? (cat.isFruitUnit
               ? fruitOverrideCount
-              : Object.keys(pkgOverrides).filter((k) => k.startsWith(`${cat.key}:`)).length;
+              : Object.keys(pkgOverrides).filter((k) => k.startsWith(`${cat.key}:`)).length);
             const sample = getCategorySampleItem(cat.key, r?.catalog);
             const sampleSell = sample ? computePreviewSell(sample.cost, mode, fixedVal, pctVal) : 0;
             const sampleProfit = sample ? sampleSell - sample.cost : 0;
@@ -3362,7 +3370,7 @@ function renderAdminPricingPageHtml() {
                     <button type="button" class="pricing-mode-btn ${mode === 'fixed' ? 'is-active' : ''}" data-cat-mode-btn="${cat.key}" data-mode="fixed">+VNĐ thủ công</button>
                     <button type="button" class="pricing-mode-btn ${mode === 'percent' ? 'is-active' : ''}" data-cat-mode-btn="${cat.key}" data-mode="percent">+% Phần trăm</button>
                   </div>
-                  ${overrideCount > 0 ? `<span class="badge-tag amber">${overrideCount} giá riêng</span>` : `<span class="badge-tag green">Tự động</span>`}
+                  ${personal ? `<span class="badge-tag ${rule?.personal ? 'amber' : 'green'}">${rule?.personal ? 'Danh mục riêng' : 'Theo bảng giá chung'}</span>` : overrideCount > 0 ? `<span class="badge-tag amber">${overrideCount} giá riêng</span>` : `<span class="badge-tag green">Tự động</span>`}
                 </div>
 
                 <div data-cat-fixed-wrap="${cat.key}" style="display:${mode === 'fixed' ? 'flex' : 'none'};flex-direction:column;gap:8px;">
@@ -3377,7 +3385,7 @@ function renderAdminPricingPageHtml() {
 
                 <div data-cat-percent-wrap="${cat.key}" style="display:${mode === 'percent' ? 'flex' : 'none'};flex-direction:column;gap:8px;">
                   <div style="display:flex;align-items:center;gap:8px;">
-                    <input type="number" id="admCatPct_${cat.key}" class="input-box adm-cat-pct-input" data-cat-key="${cat.key}" value="${pctVal}" step="1" min="0" max="500" />
+                    <input type="number" id="admCatPct_${cat.key}" class="input-box adm-cat-pct-input" data-cat-key="${cat.key}" value="${pctVal}" step="0.01" min="0" max="500" />
                     <span style="font-size:12px;color:var(--color-moon-mist);white-space:nowrap;">% trên giá gốc</span>
                   </div>
                   <div class="pricing-preset-row">
@@ -3409,12 +3417,13 @@ function renderAdminPricingPageHtml() {
                   ${
                     overrideCount > 0
                       ? `<label style="display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:#895d0a;cursor:pointer;">
-                          <input type="checkbox" id="admCatApplyOvr_${cat.key}" checked />
+                          <input type="checkbox" id="admCatApplyOvr_${cat.key}" ${personal ? '' : 'checked'} />
                           <span>Áp dụng luôn cho ${overrideCount} giá riêng</span>
                         </label>`
                       : `<span style="font-size:11px;color:var(--color-fog-veil);">Tất cả đang chạy tự động</span>`
                   }
-                  <div style="display:flex;gap:6px;align-items:center;">
+                  <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+                    ${rule?.personal ? `<button type="button" class="btn-frost" style="padding:5px 8px;font-size:11px;" data-inherit-category="${cat.key}">Dùng lại giá danh mục chung</button>` : ''}
                     ${overrideCount > 0 ? `<button type="button" class="btn-frost" style="padding:5px 8px;font-size:11px;" data-reset-cat-overrides="${cat.key}">↺ Gỡ giá riêng</button>` : ''}
                     <button type="button" class="btn-violet" style="padding:6px 14px;font-size:12px;" data-save-single-cat="${cat.key}">
                       ✓ Cập nhật
@@ -3427,7 +3436,7 @@ function renderAdminPricingPageHtml() {
         </div>
 
         <div style="display:flex;justify-content:flex-end;margin-top:16px;">
-          <button type="button" class="btn-violet" id="btnSaveAllCatsBottom">💾 Cập nhật tất cả 8 danh mục</button>
+          <button type="button" class="btn-violet" id="btnSaveAllCatsBottom">${personal ? 'Lưu các danh mục đã chỉnh' : '💾 Cập nhật tất cả 8 danh mục'}</button>
         </div>
       `
           : state.adminPricingTab === 'packages'
@@ -3479,7 +3488,7 @@ function renderAdminPricingPageHtml() {
                     <strong style="color:var(--color-pure-white);">${escapeHtml(p.name)}</strong>
                     ${p.isOnSale ? `<span class="badge-tag amber" style="margin-left:6px;">Sale</span>` : ''}
                     <div style="font-size:10.5px;color:${p.hasOverride ? '#895d0a' : '#236f60'};margin-top:2px;">
-                      ${p.hasOverride ? 'Giá cố định riêng' : personal ? 'Theo bảng giá chung' : modes[p.catKey] === 'percent' ? `Tự động (+${percents[p.catKey] ?? 0}%)` : `Tự động (+${formatVnd(cm[p.catKey] ?? 5000)})`}
+                      ${p.hasOverride ? 'Giá cố định riêng' : personal ? (r.categoryPricing?.[p.catKey]?.personal ? 'Theo danh mục riêng' : 'Theo bảng giá chung') : modes[p.catKey] === 'percent' ? `Tự động (+${percents[p.catKey] ?? 0}%)` : `Tự động (+${formatVnd(cm[p.catKey] ?? 5000)})`}
                     </div>
                   </td>
                   <td>
@@ -3506,7 +3515,7 @@ function renderAdminPricingPageHtml() {
                   <td>
                     <div style="display:flex;gap:6px;flex-wrap:wrap;">
                       <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11.5px;" data-save-pkg-row="${p.key}">✓ Cập nhật</button>
-                      ${p.hasOverride ? `<button type="button" class="btn-frost" style="padding:5px 10px;font-size:11px;" data-reset-pkg-override="${p.key}">↺ ${state.pricingCtvId ? 'Dùng giá chung' : 'Tự động'}</button>` : ''}
+                      ${p.hasOverride ? `<button type="button" class="btn-frost" style="padding:5px 10px;font-size:11px;" data-reset-pkg-override="${p.key}">↺ Tự động</button>` : ''}
                     </div>
                   </td>
                 </tr>
@@ -3595,7 +3604,7 @@ function renderAdminFruitRowsHtml(fruits) {
               <div>
                 <strong style="color:var(--color-pure-white);">${escapeHtml(f.name)}</strong>
                 <div style="font-size:10.5px;color:${hasOverride ? '#895d0a' : '#236f60'};">
-                  ${hasOverride ? 'Giá cố định riêng' : state.pricingCtvId ? 'Theo bảng giá chung' : fruitMode === 'percent' ? `Tự động (+${fruitPct}%)` : `Tự động (+${formatVnd(defMk)})`}
+                  ${hasOverride ? 'Giá cố định riêng' : state.pricingCtvId ? (state.pricingCatalog?.categoryPricing?.fruit_by_fruit?.personal ? 'Theo danh mục riêng' : 'Theo bảng giá chung') : fruitMode === 'percent' ? `Tự động (+${fruitPct}%)` : `Tự động (+${formatVnd(defMk)})`}
                 </div>
               </div>
             </div>
@@ -3622,7 +3631,7 @@ function renderAdminFruitRowsHtml(fruits) {
           <td>
             <div style="display:flex;gap:6px;flex-wrap:wrap;">
               <button type="button" class="btn-violet" style="padding:5px 10px;font-size:11px;" data-save-fruit-row="${f.id}">✓ Cập nhật</button>
-              ${hasOverride ? `<button type="button" class="btn-frost" style="padding:5px 8px;font-size:11px;" data-reset-fruit-override="${f.id}">↺ ${state.pricingCtvId ? 'Dùng giá chung' : 'Tự động'}</button>` : ''}
+              ${hasOverride ? `<button type="button" class="btn-frost" style="padding:5px 8px;font-size:11px;" data-reset-fruit-override="${f.id}">↺ Tự động</button>` : ''}
               <button type="button" class="btn-frost" style="padding:5px 9px;font-size:11px;" data-open-mut-pricing="${f.id}">
                 19 đột biến
               </button>
@@ -3738,6 +3747,20 @@ function buildCategoryPayload(catKey) {
   const card = document.querySelector(`[data-cat-card="${catKey}"]`);
   if (!card) return null;
   const mode = card.querySelector('.pricing-mode-btn.is-active')?.dataset.mode === 'percent' ? 'percent' : 'fixed';
+  const applyOvr = document.getElementById(`admCatApplyOvr_${catKey}`);
+  if (state.pricingCtvId) {
+    const fixed = document.getElementById(`admCatFixed_${catKey}`).valueAsNumber;
+    const percent = document.getElementById(`admCatPct_${catKey}`).valueAsNumber;
+    const rule = { mode, fixed, percent };
+    if (catKey === 'fruit_by_fruit') rule.orderFee = document.getElementById('admCatFruitOrderFee').valueAsNumber;
+    const amounts = catKey === 'fruit_by_fruit' ? [fixed, rule.orderFee] : [fixed];
+    if (amounts.some(v => !Number.isSafeInteger(v) || v < 0 || v > 1e12) ||
+        !Number.isFinite(percent) || percent < 0 || percent > 500 || Math.round(percent * 100) / 100 !== percent) {
+      showToast('Nhập mức cộng và phí bằng số nguyên không âm. Phần trăm từ 0 đến 500%, tối đa 2 chữ số thập phân.');
+      return null;
+    }
+    return { categoryRules: { [catKey]: rule }, ...(applyOvr?.checked && { resetCategoryOverrides: [catKey] }) };
+  }
   const fixedVal = Math.max(0, Math.round(Number(document.getElementById(`admCatFixed_${catKey}`)?.value || 0)));
   const pctVal = Math.max(0, Math.min(500, Number(document.getElementById(`admCatPct_${catKey}`)?.value || 0)));
   const payload = {
@@ -3751,7 +3774,6 @@ function buildCategoryPayload(catKey) {
   } else {
     payload.categoryMarkups = { [catKey]: fixedVal };
   }
-  const applyOvr = document.getElementById(`admCatApplyOvr_${catKey}`);
   if (applyOvr && applyOvr.checked) {
     payload.resetCategoryOverrides = [catKey];
   }
@@ -3767,7 +3789,6 @@ function bindAdminPricingEvents() {
       return;
     }
     state.pricingCtvId = select.value;
-    if (select.value && state.adminPricingTab === 'categories') state.adminPricingTab = 'packages';
     loadCtvPricing(select.value);
   });
   document.getElementById('btnRefreshAdminPricing')?.addEventListener('click', async () => {
@@ -3787,12 +3808,27 @@ function bindAdminPricingEvents() {
   });
 
   // --- TAB 1: CATEGORY PRICING (FIXED VNĐ + PERCENT %) ---
+  document.querySelectorAll('[data-cat-card]').forEach(card => {
+    card.addEventListener('input', () => { card.dataset.dirty = '1'; });
+  });
+  document.querySelectorAll('[data-inherit-category]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        await savePricingSettingsAndReload({ categoryRules: { [btn.dataset.inheritCategory]: null } });
+      } catch (err) {
+        showToast(err.message);
+        btn.disabled = false;
+      }
+    });
+  });
   document.querySelectorAll('[data-cat-mode-btn]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const catKey = btn.dataset.catModeBtn;
       const mode = btn.dataset.mode;
       const card = document.querySelector(`[data-cat-card="${catKey}"]`);
       if (!card) return;
+      card.dataset.dirty = '1';
       card.querySelectorAll('[data-cat-mode-btn]').forEach((b) => b.classList.toggle('is-active', b.dataset.mode === mode));
       const fWrap = card.querySelector(`[data-cat-fixed-wrap="${catKey}"]`);
       const pWrap = card.querySelector(`[data-cat-percent-wrap="${catKey}"]`);
@@ -3810,7 +3846,7 @@ function bindAdminPricingEvents() {
       const inp = document.getElementById(mode === 'percent' ? `admCatPct_${catKey}` : `admCatFixed_${catKey}`);
       if (inp) {
         inp.value = val;
-        updateCategoryCardPreview(catKey);
+        inp.dispatchEvent(new Event('input', { bubbles: true }));
       }
     });
   });
@@ -3860,20 +3896,28 @@ function bindAdminPricingEvents() {
     const categoryMarkups = {};
     const categoryMarkupModes = {};
     const categoryMarkupPercents = {};
+    const categoryRules = {};
     const resetCategoryOverrides = [];
     let defaultFruitUnitMarkup;
     for (const cat of PRICING_CATEGORIES) {
+      if (state.pricingCtvId && !document.querySelector(`[data-cat-card="${cat.key}"][data-dirty="1"]`)) continue;
       const sub = buildCategoryPayload(cat.key);
-      if (!sub) continue;
+      if (!sub) return;
+      Object.assign(categoryRules, sub.categoryRules);
       Object.assign(categoryMarkupModes, sub.categoryMarkupModes);
       Object.assign(categoryMarkupPercents, sub.categoryMarkupPercents);
       if (sub.categoryMarkups) Object.assign(categoryMarkups, sub.categoryMarkups);
       if (sub.defaultFruitUnitMarkup !== undefined) defaultFruitUnitMarkup = sub.defaultFruitUnitMarkup;
       if (sub.resetCategoryOverrides?.length) resetCategoryOverrides.push(...sub.resetCategoryOverrides);
     }
+    if (state.pricingCtvId && !Object.keys(categoryRules).length) {
+      showToast('Chưa có thay đổi giá danh mục cần lưu.');
+      return;
+    }
+    const originalLabel = triggerBtn?.textContent;
     if (triggerBtn) { triggerBtn.disabled = true; triggerBtn.textContent = 'Đang cập nhật...'; }
     try {
-      const body = { categoryMarkups, categoryMarkupModes, categoryMarkupPercents, defaultFruitUnitMarkup };
+      const body = state.pricingCtvId ? { categoryRules } : { categoryMarkups, categoryMarkupModes, categoryMarkupPercents, defaultFruitUnitMarkup };
       if (resetCategoryOverrides.length > 0) body.resetCategoryOverrides = resetCategoryOverrides;
       await savePricingSettingsAndReload(
         body,
@@ -3881,7 +3925,7 @@ function bindAdminPricingEvents() {
       );
     } catch (err) {
       showToast(`Lỗi: ${err.message}`);
-      if (triggerBtn) { triggerBtn.disabled = false; triggerBtn.textContent = '💾 Cập nhật tất cả 8 danh mục'; }
+      if (triggerBtn) { triggerBtn.disabled = false; triggerBtn.textContent = originalLabel; }
     }
   };
   document.getElementById('btnSaveAllCatsBottom')?.addEventListener('click', (e) => saveAllCategories(e.currentTarget));
@@ -4122,7 +4166,7 @@ function openAdminMutationPricingModal(fruitId) {
                   <span style="width:10px;height:10px;border-radius:999px;background:${m.mutation_color};"></span>
                   <strong style="color:var(--color-pure-white);">${escapeHtml(m.mutation_name)}</strong>
                 </span>
-                <div style="font-size:10px;color:${hasOvr ? '#895d0a' : '#236f60'};margin-top:2px;">${hasOvr ? 'Giá cố định riêng' : state.pricingCtvId ? 'Theo giá trái và bảng giá chung' : 'Tự động'}</div>
+                <div style="font-size:10px;color:${hasOvr ? '#895d0a' : '#236f60'};margin-top:2px;">${hasOvr ? 'Giá cố định riêng' : 'Tự động'}</div>
               </td>
               <td>${formatVnd(cost)}</td>
               <td style="max-width:170px;">
@@ -4821,6 +4865,11 @@ function bindGlobalEvents() {
         if (state.user) await loadInitialAppData();
       }
       const remoteVer = Number(p.updateVersion || 0);
+      if (p.pricingVersion && p.pricingVersion !== state.lastFullPricingVersion && state.user?.role === 'ctv' &&
+          !state.maintenanceLocked && !state.loadingCatalog && !isUserTypingOrModalOpen()) {
+        await loadCatalog(false);
+        if (!isUserTypingOrModalOpen() && (ORDER_VIEWS.includes(state.currentView) || state.currentView === 'dashboard')) renderCurrentView();
+      }
       if (state.seenUpdateVersion == null) {
         state.seenUpdateVersion = remoteVer;
       } else if (remoteVer > state.seenUpdateVersion && !state.maintenanceLocked) {

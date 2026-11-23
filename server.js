@@ -932,13 +932,26 @@ function validPercent(value) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 500;
 }
 
+function categoryRule(categoryKey, productPrices) {
+  const own = productPrices?.categoryRules?.[categoryKey];
+  if (own) return own;
+  const isFruit = categoryKey === 'fruit_by_fruit';
+  const markup = db.settings.categoryMarkups?.[categoryKey];
+  return {
+    mode: db.settings.categoryMarkupModes?.[categoryKey] === 'percent' ? 'percent' : 'fixed',
+    fixed: isFruit ? (db.settings.defaultFruitUnitMarkup ?? 40) : (markup ?? db.settings.defaultMarkup ?? 5000),
+    percent: db.settings.categoryMarkupPercents?.[categoryKey] ?? 0,
+    ...(isFruit && { orderFee: markup ?? 0 }),
+  };
+}
+
 function getPackageSellingPrice(categoryKey, pkgId, costEffective, costOriginal, tierMarkupPercent = 0, productPrices) {
   const pkgKey = `${categoryKey}:${pkgId}`;
   const personalPrice = productPrices?.packagePriceOverrides?.[pkgKey];
-  const override = personalPrice ?? db.settings.packagePriceOverrides?.[pkgKey];
-  const catMode = db.settings.categoryMarkupModes?.[categoryKey] === 'percent' ? 'percent' : 'fixed';
-  const catMarkup = Number(db.settings.categoryMarkups?.[categoryKey] ?? db.settings.defaultMarkup ?? 5000);
-  const catPercent = Number(db.settings.categoryMarkupPercents?.[categoryKey] ?? 0);
+  const override = personalPrice ?? (productPrices?.categoryRules?.[categoryKey] ? undefined : db.settings.packagePriceOverrides?.[pkgKey]);
+  const { mode: catMode, fixed, percent } = categoryRule(categoryKey, productPrices);
+  const catMarkup = Number(fixed);
+  const catPercent = Number(percent);
   const factor = tierMarkupPercent > 0 ? (100 + tierMarkupPercent) / 100 : 1;
 
   const adjustedCostEffective = Math.round(Number(costEffective || 0) * factor);
@@ -980,10 +993,11 @@ function getFruitUnitPricing(fruitItem, productPrices) {
   const fid = String(fruitItem.id);
   const costBase = Number(fruitItem.base_price || 0);
   const personalUnit = productPrices?.fruitUnitPrices?.[fid];
-  const customUnit = personalUnit ?? db.settings.fruitUnitPrices?.[fid];
-  const fruitMode = db.settings.categoryMarkupModes?.fruit_by_fruit === 'percent' ? 'percent' : 'fixed';
-  const defaultFruitMarkup = Number(db.settings.defaultFruitUnitMarkup ?? 40);
-  const fruitPercent = Number(db.settings.categoryMarkupPercents?.fruit_by_fruit ?? 0);
+  const personalCategory = productPrices?.categoryRules?.fruit_by_fruit;
+  const customUnit = personalUnit ?? (personalCategory ? undefined : db.settings.fruitUnitPrices?.[fid]);
+  const { mode: fruitMode, fixed, percent } = categoryRule('fruit_by_fruit', productPrices);
+  const defaultFruitMarkup = Number(fixed);
+  const fruitPercent = Number(percent);
   if (!validMoney(defaultFruitMarkup) || !validPercent(fruitPercent)) throw new Error('Cấu hình mức cộng trái cây không hợp lệ.');
 
   const hasCustomUnit = customUnit !== undefined && customUnit !== null && customUnit !== '' && Number(customUnit) >= 0;
@@ -1001,7 +1015,7 @@ function getFruitUnitPricing(fruitItem, productPrices) {
     const mKey = `${fid}:${mp.mutation_key}`;
     const costMut = Number(mp.unit_price || 0);
     const personalMut = productPrices?.fruitMutationPrices?.[mKey];
-    const customMut = personalMut ?? db.settings.fruitMutationPrices?.[mKey];
+    const customMut = personalMut ?? (personalCategory ? undefined : db.settings.fruitMutationPrices?.[mKey]);
     const hasCustomMut = customMut !== undefined && customMut !== null && customMut !== '' && Number(customMut) >= 0;
     const requestedMut = hasCustomMut
       ? Number(customMut)
@@ -1035,7 +1049,7 @@ function getFruitUnitPricing(fruitItem, productPrices) {
 function calculateFruitOrderSellingPrice(fruitItem, totalCnt, mutationList = [], productPrices) {
   const qty = Math.max(1, Math.floor(Number(totalCnt || 1)));
   const pricing = getFruitUnitPricing(fruitItem, productPrices);
-  const orderFee = Number(db.settings.categoryMarkups?.fruit_by_fruit ?? 0);
+  const orderFee = Number(categoryRule('fruit_by_fruit', productPrices).orderFee);
 
   const cleanMuts = Array.isArray(mutationList) ? mutationList.map(Number).filter(Boolean) : [];
   if (cleanMuts.length === 0) {
@@ -1493,6 +1507,7 @@ app.get('/api/ping', (req, res) => {
   res.json({
     ok: true,
     maintenance: isMaintenanceActive(),
+    pricingVersion: settingsVersion,
     updateVersion: Number(db?.settings?.clientUpdateVersion || 0),
     ts: Date.now(),
   });
@@ -1633,7 +1648,7 @@ const CTV_CATALOG_FRESH_MS = 10 * 60 * 1000;   // 10 phút cho CTV xem thường
 const ADMIN_CATALOG_FRESH_MS = 60 * 1000;      // 1 phút cho Admin
 let lastAdminActivityAt = 0;
 let lastCtvActivityAt = 0;
-let settingsVersion = 1;
+let settingsVersion = Date.now();
 let catalogCache = {
   timestamp: 0,
   raw: null,
@@ -2173,6 +2188,13 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
       partialScope: scope || undefined,
       syncedAt: raw.syncedAt,
       pricingVersion: settingsVersion,
+      fruitOrderFee: Number(categoryRule('fruit_by_fruit', productPrices).orderFee),
+      categoryPricing: isAdmin && priceOwner ? Object.fromEntries(Object.keys(CATEGORY_METADATA).map(key => {
+        const productCount = key === 'fruit_by_fruit'
+          ? Object.keys(productPrices.fruitUnitPrices || {}).length + Object.keys(productPrices.fruitMutationPrices || {}).length
+          : Object.keys(productPrices.packagePriceOverrides || {}).filter(id => id.startsWith(key + ':')).length;
+        return [key, { ...categoryRule(key, productPrices), personal: Boolean(productPrices.categoryRules?.[key]), productCount }];
+      })) : undefined,
       systemStatus,
       processingRates: scope ? undefined : raw.processingRates,
       hnSettings: {
@@ -4054,6 +4076,7 @@ app.put(['/api/admin/settings', '/api/admin/ctv/:id/pricing'], requireAdmin, asy
       fruitUnitPrices,
       fruitMutationPrices,
       resetCategoryOverrides,
+      categoryRules,
       hoanNguyenEmail,
       hoanNguyenPassword,
       sourceEmail,
@@ -4064,8 +4087,22 @@ app.put(['/api/admin/settings', '/api/admin/ctv/:id/pricing'], requireAdmin, asy
     if (req.params.id !== undefined) {
       ctv = db.users.find(u => u.id === req.params.id && u.role === 'ctv' && !u.archivedAt);
       if (!ctv) return res.status(404).json({ success: false, message: 'Không tìm thấy CTV.' });
-      if (Object.keys(req.body || {}).some(key => !Object.hasOwn(productTables, key))) {
-        throw new Error('Bảng giá riêng chỉ áp dụng cho sản phẩm của CTV đã chọn.');
+      if (Object.keys(req.body || {}).some(key => !Object.hasOwn(productTables, key) && key !== 'categoryRules' && key !== 'resetCategoryOverrides')) {
+        throw new Error('Thay đổi này không thuộc bảng giá của CTV đã chọn.');
+      }
+    }
+    if (categoryRules !== undefined) {
+      if (!ctv || !categoryRules || typeof categoryRules !== 'object' || Array.isArray(categoryRules)) {
+        throw new Error('Bảng giá danh mục CTV không hợp lệ.');
+      }
+      for (const [key, rule] of Object.entries(categoryRules)) {
+        if (!Object.hasOwn(CATEGORY_METADATA, key)) throw new Error('Danh mục CTV không hợp lệ.');
+        if (rule === null) continue;
+        if (!rule || !['fixed', 'percent'].includes(rule.mode) || !validMoney(rule.fixed) || !validPercent(rule.percent) ||
+            Math.round(rule.percent * 100) / 100 !== rule.percent ||
+            (key === 'fruit_by_fruit' ? !validMoney(rule.orderFee) : rule.orderFee !== undefined)) {
+          throw new Error('Kiểm tra mức cộng, phần trăm và phí đơn trong danh mục đã chọn.');
+        }
       }
     }
     const upstreamEmail = sourceEmail !== undefined ? sourceEmail : hoanNguyenEmail;
@@ -4140,19 +4177,36 @@ app.put(['/api/admin/settings', '/api/admin/ctv/:id/pricing'], requireAdmin, asy
         db.settings.categoryMarkupPercents[k] = Math.round(Number(v) * 100) / 100;
       }
     }
+    const target = ctv ? (ctv.productPrices ??= {}) : db.settings;
+    if (categoryRules) {
+      const rules = target.categoryRules ??= {};
+      for (const [key, rule] of Object.entries(categoryRules)) {
+        if (rule === null) delete rules[key];
+        else rules[key] = {
+          mode: rule.mode, fixed: rule.fixed, percent: rule.percent,
+          ...(key === 'fruit_by_fruit' && { orderFee: rule.orderFee }),
+        };
+      }
+      if (!Object.keys(rules).length) delete target.categoryRules;
+    }
     if (Array.isArray(resetCategoryOverrides)) {
       for (const catKey of resetCategoryOverrides) {
         if (catKey === 'fruit_by_fruit') {
-          db.settings.fruitUnitPrices = {};
-          db.settings.fruitMutationPrices = {};
-        } else {
-          for (const pkgKey of Object.keys(db.settings.packagePriceOverrides || {})) {
-            if (pkgKey.startsWith(`${catKey}:`)) delete db.settings.packagePriceOverrides[pkgKey];
+          if (ctv) {
+            delete target.fruitUnitPrices;
+            delete target.fruitMutationPrices;
+          } else {
+            target.fruitUnitPrices = {};
+            target.fruitMutationPrices = {};
           }
+        } else {
+          for (const pkgKey of Object.keys(target.packagePriceOverrides || {})) {
+            if (pkgKey.startsWith(`${catKey}:`)) delete target.packagePriceOverrides[pkgKey];
+          }
+          if (ctv && !Object.keys(target.packagePriceOverrides || {}).length) delete target.packagePriceOverrides;
         }
       }
     }
-    const target = ctv ? (ctv.productPrices ??= {}) : db.settings;
     for (const [table, changes] of Object.entries(productTables)) {
       if (!changes) continue;
       const prices = target[table] ??= {};
