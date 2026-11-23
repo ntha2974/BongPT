@@ -1,4 +1,4 @@
-# ZnPlay
+# ebongiu
 
 Ứng dụng Node.js / Express quản lý đơn Play Together và tài khoản CTV.
 
@@ -14,7 +14,7 @@ Yêu cầu Node.js từ 22.16 trở lên. Phiên bản được kiểm tra: 24.1
 4. Chạy `npm test` để kiểm tra.
 
 Trên Windows, chạy `.\scripts\install-local.ps1` trong PowerShell để khởi động
-localhost bằng Task Scheduler. Tác vụ **ZnPlay Localhost** chạy dưới tài khoản
+localhost bằng Task Scheduler. Tác vụ **ebongiu Localhost** chạy dưới tài khoản
 hiện tại, tự chạy khi đăng nhập và kiểm tra mỗi phút để khởi động lại nếu tác vụ đã dừng.
 Máy cần bật và thức để nhận kết nối.
 
@@ -49,7 +49,7 @@ Nếu thay tài khoản nguồn qua Environment trên Render, cần triển khai
 1. Đăng nhập [Neon Console](https://console.neon.tech) và chọn tổ chức dùng cho dự án.
 2. Tạo Project mới → bấm **Connect** → copy chuỗi `DATABASE_URL` (`postgresql://...`).
 3. Dán `DATABASE_URL` vào **Render → Environment** (đảm bảo đã có `ADMIN_PASSWORD`) → Deploy lại.
-4. Hệ thống sẽ tự khởi tạo bảng PostgreSQL lần đầu. Kiểm tra `/api/health` thấy `storage: "postgresql"`. Từ lúc này toàn bộ tài khoản CTV, số dư ví, đơn hàng và bảng giá sẽ **không bao giờ bị mất** khi Render ngủ hoặc tắt.
+4. Hệ thống sẽ tự khởi tạo bảng PostgreSQL lần đầu. Kiểm tra `/api/health` thấy `storage: "postgresql"`. Tài khoản CTV, số dư ví, đơn hàng và bảng giá được lưu trên PostgreSQL qua các lần Render khởi động lại.
 5. Nếu muốn mang dữ liệu từ localhost lên hosting, mở **Quản trị → Cấu hình Nguồn API → Tải bản sao lưu JSON** ở localhost rồi **Khôi phục từ file JSON** trên hosting (hoặc dùng CLI `npm run db:import` bên dưới).
 
 ### Chuyển bằng CLI (`npm run db:import`)
@@ -57,11 +57,11 @@ Nếu thay tài khoản nguồn qua Environment trên Render, cần triển khai
    thay đổi dữ liệu và lấy bản sao riêng của `data/db.json` đang phục vụ.
 2. Đặt `DATABASE_URL` trong `.env`; đặt `DATA_DIR` trỏ đến thư mục chứa bản sao chính thức. Giữ file này ngoài Git.
 3. Chạy `npm ci` và `npm run db:import`. Lệnh nhập tài khoản, phiên, giá,
-   số dư, giao dịch, đơn, yêu cầu đối soát và nhật ký trong một giao dịch và từ chối ghi đè database ZnPlay đã có dữ liệu.
+   số dư, giao dịch, đơn, yêu cầu đối soát và nhật ký trong một giao dịch và từ chối ghi đè database ebongiu đã có dữ liệu.
 4. Đặt cùng `DATABASE_URL` trong Render Environment và triển khai một instance.
 
-### Giữ Render Free phản hồi nhanh (tùy chọn miễn phí)
-Render Free ngủ sau 15 phút không có truy cập. Bạn có thể tạo 1 monitor miễn phí trên **UptimeRobot** hoặc **cron-job.org** gọi `GET https://<domain-của-bạn>/api/ping` mỗi 10 phút trong khung giờ bán hàng để trang luôn nóng và phản hồi tức thì.
+### Giữ Render Free luôn thức (không ngừng 24/7, miễn phí)
+Render Free ngủ sau 15 phút không có truy cập (và cấp 750 giờ miễn phí/tháng — đủ chạy liên tục 24/7 cho 1 Web Service). Tạo 1 monitor miễn phí trên **UptimeRobot** hoặc **cron-job.org** gọi `GET` hoặc `HEAD` tới `https://<domain-của-bạn>/api/ping` mỗi **5–10 phút**. Endpoint `/api/ping` phản hồi ngay từ RAM và **không truy vấn PostgreSQL** khi nhàn rỗi, nên giữ web luôn nóng mà vẫn để Neon tự ngủ tiết kiệm hạn mức Compute Hours.
 
 Khi `DATABASE_URL` đã cấu hình, lỗi PostgreSQL kéo dài khiến API tạm ngừng phục vụ để bảo vệ số dư; lỗi ngắt kết nối tạm thời khi Neon thức dậy sẽ tự động thử lại.
 Mỗi môi trường chạy một tiến trình ghi. Dùng database hoặc nhánh Neon riêng
@@ -87,7 +87,7 @@ Nếu để trống `DATABASE_URL`, ứng dụng dùng JSON tại `DATA_DIR`; t�
 của Render có thể mất khi triển khai lại hoặc khi dịch vụ ngủ. [Render Free](https://render.com/docs/free)
 
 Nạp ví, đặt đơn và hoàn ví đều hoạt động trên Render Free, không yêu cầu persistent
-disk. Admin cấp số dư nội bộ cho CTV trên ZnPlay; khi CTV đặt đơn, ZnPlay trừ ví CTV
+disk. Admin cấp số dư nội bộ cho CTV trên ebongiu; khi CTV đặt đơn, ebongiu trừ ví CTV
 theo giá bán và gửi đơn sang HoanNguyen, nơi tài khoản nguồn thanh toán chi phí thực tế.
 Nạp ví CTV không tự chuyển tiền hay nạp vào tài khoản HoanNguyen.
 Sao lưu dữ liệu riêng trước khi đổi thư mục lưu trữ hoặc triển khai lại.

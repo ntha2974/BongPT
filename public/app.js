@@ -1,11 +1,22 @@
 // ============================================================================
-// ZNPLAY — SELLER & CTV SYSTEM (AUTHKIT FROSTED GLASS + SIDEBAR MENU)
+// EBONGIU — SELLER & CTV SYSTEM (AUTHKIT FROSTED GLASS + SIDEBAR MENU)
 // ============================================================================
 
 import { createToolViews } from './tools.js';
 
+const previousToken = sessionStorage.getItem('bonglee_token') || sessionStorage.getItem('znplay_token');
+if (previousToken && !sessionStorage.getItem('ebongiu_token')) {
+  sessionStorage.setItem('ebongiu_token', previousToken);
+}
+sessionStorage.removeItem('bonglee_token');
+localStorage.removeItem('bonglee_token');
+sessionStorage.removeItem('bonglee_catalog_cache');
+sessionStorage.removeItem('znplay_token');
+localStorage.removeItem('znplay_token');
+sessionStorage.removeItem('znplay_catalog_cache');
+
 const state = {
-  token: sessionStorage.getItem('znplay_token') || '',
+  token: sessionStorage.getItem('ebongiu_token') || '',
   user: null,
   catalogData: null,
   catalogWarning: '',
@@ -57,7 +68,7 @@ const state = {
     mail_message: 'Cảm ơn quý khách',
   },
 };
-localStorage.removeItem('znplay_token');
+localStorage.removeItem('ebongiu_token');
 
 const { renderIdentityToolsHtml, bindIdentityToolsEvents, loadAdminMonitor, renderAdminMonitorHtml, bindAdminMonitorEvents } =
   createToolViews({ state, apiFetch, createRequestKey, escapeHtml, showToast, formatVnd, formatDateVi, renderCurrentView, loadOrders });
@@ -193,7 +204,7 @@ async function apiFetch(url, method = 'GET', body = null, timeoutMs = 0) {
     updateShellAuthUI();
   }
   if (res.status === 503 && (data?.code === 'MAINTENANCE' || data?.maintenance) && state.token && state.user?.role !== 'admin') {
-    setCtvMaintenanceOverlay(true, data?.message || 'Hệ thống Zn đang bảo trì');
+    setCtvMaintenanceOverlay(true, data?.message || 'Hệ thống ebongiu đang bảo trì');
   }
   if (!data || typeof data !== 'object') throw new Error('Máy chủ chưa trả về dữ liệu. Vui lòng thử lại.');
   if (!res.ok && !data.needs_confirmation) {
@@ -202,24 +213,24 @@ async function apiFetch(url, method = 'GET', body = null, timeoutMs = 0) {
   return data;
 }
 
-function setCtvMaintenanceOverlay(active, message = 'Hệ thống Zn đang bảo trì') {
+function setCtvMaintenanceOverlay(active, message = 'Hệ thống ebongiu đang bảo trì') {
   if (state.user?.role === 'admin') active = false;
   state.maintenanceLocked = Boolean(active);
   if (typeof document === 'undefined' || !document.body) return;
-  let el = document.getElementById('znMaintenanceOverlay');
+  let el = document.getElementById('ebongiuMaintenanceOverlay');
   if (!active) {
     if (el) el.remove();
     return;
   }
   if (!el) {
     el = document.createElement('div');
-    el.id = 'znMaintenanceOverlay';
+    el.id = 'ebongiuMaintenanceOverlay';
     el.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(5,6,15,0.94);backdrop-filter:blur(14px);display:flex;align-items:center;justify-content:center;padding:24px;';
     el.innerHTML = `
       <div style="max-width:440px;width:100%;background:#fff;border:1px solid rgba(251,191,36,0.45);border-radius:18px;padding:30px 26px;text-align:center;box-shadow:0 24px 64px rgba(0,0,0,0.6);display:flex;flex-direction:column;align-items:center;gap:14px;">
-        <img src="/kitty-shop.jpg" alt="ZnStudio" class="brand-logo-img brand-logo-lg" />
+        <img src="/kitty-shop.jpg" alt="ebongiu" class="brand-logo-img brand-logo-lg" />
         <span class="badge-tag amber" style="font-size:12px;">🛠️ ĐANG BẢO TRÌ</span>
-        <h2 id="znMaintenanceTitle" style="margin:0;color:var(--color-pure-white);font-size:22px;font-weight:700;">${escapeHtml(message)}</h2>
+        <h2 id="ebongiuMaintenanceTitle" style="margin:0;color:var(--color-pure-white);font-size:22px;font-weight:700;">${escapeHtml(message)}</h2>
         <p style="margin:0;color:var(--color-moon-mist);font-size:13.5px;line-height:1.6;">
           Hệ thống đang được quản trị viên bảo trì để cập nhật. Trang sẽ tự động mở lại ngay khi hoàn tất.
         </p>
@@ -242,9 +253,9 @@ function setCtvMaintenanceOverlay(active, message = 'Hệ thống Zn đang bảo
           if (state.user) await loadInitialAppData();
           return;
         }
-        showToast('Hệ thống Zn vẫn đang bảo trì. Vui lòng chờ thêm ít phút.');
+        showToast('Hệ thống ebongiu vẫn đang bảo trì. Vui lòng chờ thêm ít phút.');
       } finally {
-        if (document.getElementById('znMaintenanceOverlay')) {
+        if (document.getElementById('ebongiuMaintenanceOverlay')) {
           b.disabled = false;
           b.textContent = '↻ Kiểm tra lại';
         }
@@ -254,7 +265,7 @@ function setCtvMaintenanceOverlay(active, message = 'Hệ thống Zn đang bảo
       logout();
     });
   } else {
-    const titleEl = el.querySelector('#znMaintenanceTitle');
+    const titleEl = el.querySelector('#ebongiuMaintenanceTitle');
     if (titleEl) titleEl.textContent = message;
   }
 }
@@ -262,19 +273,19 @@ function setCtvMaintenanceOverlay(active, message = 'Hệ thống Zn đang bảo
 function setCtvUpdateBanner(visible) {
   if (state.user?.role === 'admin') visible = false;
   if (typeof document === 'undefined' || !document.body) return;
-  let bar = document.getElementById('znCtvUpdateBanner');
+  let bar = document.getElementById('ebongiuCtvUpdateBanner');
   if (!visible) {
     if (bar) bar.remove();
     return;
   }
   if (bar) return;
   bar = document.createElement('button');
-  bar.id = 'znCtvUpdateBanner';
+  bar.id = 'ebongiuCtvUpdateBanner';
   bar.type = 'button';
   bar.style.cssText = 'position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:99998;background:linear-gradient(90deg,#b72f66,#c8487d);color:white;border:1px solid rgba(196,181,253,0.75);border-radius:999px;padding:10px 22px;font-size:13.5px;font-weight:700;cursor:pointer;box-shadow:0 12px 32px rgba(79,70,229,0.55);display:flex;align-items:center;gap:8px;max-width:calc(100vw - 24px);text-align:center;';
-  bar.textContent = '🔄 Có cập nhật từ Zn, vui lòng bấm vào dòng này';
+  bar.textContent = '🔄 Có cập nhật từ ebongiu, vui lòng bấm vào dòng này';
   bar.addEventListener('click', () => {
-    try { sessionStorage.removeItem('znplay_catalog_cache'); } catch {}
+    try { sessionStorage.removeItem('ebongiu_catalog_cache'); } catch {}
     window.location.reload();
   });
   document.body.appendChild(bar);
@@ -309,9 +320,9 @@ function clearAuthState() {
   state.currentView = 'fruit_coin';
   state.modalOrder.customer = null;
   state.modalOrder.fruit_preview_admin = null;
-  localStorage.removeItem('znplay_token');
-  sessionStorage.removeItem('znplay_token');
-  sessionStorage.removeItem('znplay_catalog_cache');
+  localStorage.removeItem('ebongiu_token');
+  sessionStorage.removeItem('ebongiu_token');
+  sessionStorage.removeItem('ebongiu_catalog_cache');
   const container = document.getElementById('mainViewContainer');
   if (container) container.innerHTML = '';
   const modal = document.getElementById('appModalOverlay');
@@ -330,7 +341,7 @@ function hydrateCachedCatalog() {
 function saveCachedCatalog(data) {
   if (!state.user || !data) return;
   try {
-    sessionStorage.setItem('znplay_catalog_cache', JSON.stringify({
+    sessionStorage.setItem('ebongiu_catalog_cache', JSON.stringify({
       userId: state.user.id,
       role: state.user.role,
       cachedAt: Date.now(),
@@ -376,7 +387,7 @@ async function initAuth() {
     } catch (err) {
       if (state.token !== requestToken) return;
       if (err.code === 'MAINTENANCE') {
-        setCtvMaintenanceOverlay(true, err.message || 'Hệ thống Zn đang bảo trì');
+        setCtvMaintenanceOverlay(true, err.message || 'Hệ thống ebongiu đang bảo trì');
         return;
       }
       if (err.status !== 401) {
@@ -401,7 +412,7 @@ async function loginWithCredentials(identifier, password) {
     if (r.updateVersion !== undefined) {
       state.seenUpdateVersion = Number(r.updateVersion || 0);
     }
-    sessionStorage.setItem('znplay_token', r.token);
+    sessionStorage.setItem('ebongiu_token', r.token);
     const passwordInput = document.getElementById('gateLoginPw');
     if (passwordInput) passwordInput.value = '';
     showToast(`Chào mừng ${r.user.name}!`);
@@ -646,7 +657,7 @@ function switchView(viewKey) {
   });
   const titleEl = document.getElementById('topNavbarViewTitle');
   if (titleEl) {
-    titleEl.textContent = VIEW_TITLES[viewKey] || 'ZnStudio';
+    titleEl.textContent = VIEW_TITLES[viewKey] || 'ebongiu';
   }
   setMobileMenuOpen(false);
 
@@ -1335,7 +1346,7 @@ function bindOrderRowActionButtons() {
         btn.disabled = true;
         try {
           const res = await apiFetch(`/api/orders/${cat}/${remId}`, 'DELETE', {
-            deletion_note: 'Xóa đơn từ ZnStudio',
+            deletion_note: 'Xóa đơn từ ebongiu',
           });
           showToast(res.message || 'Đã hủy & xóa đơn hàng');
           await Promise.all([loadOrders(true), initAuth()]);
@@ -1349,7 +1360,7 @@ function bindOrderRowActionButtons() {
   }
 }
 
-function renderSyncLoadingHtml(message = 'Đang cập nhật bảng giá từ Zn...', sub = 'Đang đồng bộ trạng thái hoạt động và giá gốc mới nhất từ hệ thống để đảm bảo chính xác tuyệt đối.') {
+function renderSyncLoadingHtml(message = 'Đang cập nhật bảng giá từ ebongiu...', sub = 'Đang đồng bộ trạng thái hoạt động và giá gốc mới nhất từ hệ thống để đảm bảo chính xác tuyệt đối.') {
   return `
     <div class="sync-loading-screen">
       <div class="sync-spinner-ring" aria-hidden="true"></div>
@@ -1379,7 +1390,7 @@ async function openCreateOrderModal(catKey, presetOptions = null) {
   const mySeq = ++createOrderModalSeq;
   box.className = 'modal-box';
   title.textContent = `+ Thêm mới: ${VIEW_TITLES[catKey] || 'Đơn hàng'}`;
-  body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ Zn...');
+  body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ ebongiu...');
   overlay.style.display = 'flex';
 
   // ALWAYS sync ONLY the exact category being opened (2-3 tiny API calls, < 2s typical, hard 6.5s ceiling < 7s!)
@@ -1395,7 +1406,7 @@ async function openCreateOrderModal(catKey, presetOptions = null) {
     body.innerHTML = `
       <div class="sync-loading-screen" style="padding:28px 16px;">
         <div style="font-size:28px;">⚠️</div>
-        <div class="sync-loading-title" style="color:#ab334a;">Không thể cập nhật bảng giá mới nhất từ Zn</div>
+        <div class="sync-loading-title" style="color:#ab334a;">Không thể cập nhật bảng giá mới nhất từ ebongiu</div>
         <div class="sync-loading-sub">${escapeHtml(state.catalogWarning || 'Hệ thống nguồn tạm thời không phản hồi. Để tránh sai giá, vui lòng thử cập nhật lại trước khi đặt đơn.')}</div>
         <button type="button" class="btn-violet" id="btnRetryModalCatalogSync">↻ Thử cập nhật lại</button>
       </div>
@@ -1789,7 +1800,7 @@ function bindCreateOrderModalEvents() {
     const lastFruitSync = state.lastScopeSyncAt?.fruit_by_fruit || 0;
     const hasFruits = (state.catalogData?.catalog?.fruit_by_fruit || []).length > 0;
     if (!hasFruits || Date.now() - lastFruitSync > 30000) {
-      body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá Trái cây từ Zn...', 'Đang lấy tồn kho & đơn giá trái cây mới nhất.');
+      body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá Trái cây từ ebongiu...', 'Đang lấy tồn kho & đơn giá trái cây mới nhất.');
       await loadCatalog(true, 'fruit_by_fruit', 6500);
       const overlay = document.getElementById('appModalOverlay');
       if (!overlay || overlay.style.display === 'none') return;
@@ -2384,7 +2395,7 @@ async function openWeatherConfigModal(order) {
   overlay.style.display = 'flex';
 
   if (!Array.isArray(state.catalogData?.catalog?.weather_buff_types) || state.catalogData.catalog.weather_buff_types.length === 0) {
-    body.innerHTML = renderSyncLoadingHtml('Đang tải danh sách thời tiết từ Zn...', 'Đang đồng bộ các loại thời tiết đang hỗ trợ.');
+    body.innerHTML = renderSyncLoadingHtml('Đang tải danh sách thời tiết từ ebongiu...', 'Đang đồng bộ các loại thời tiết đang hỗ trợ.');
     await loadCatalog(true, 'weather_buff', 6500);
     if (overlay.style.display === 'none') return;
   }
@@ -2576,7 +2587,7 @@ async function openFruitWarehouseModal() {
 
   box.className = 'modal-box wide';
   title.textContent = '📦 Kho Trái Cây Trực Tuyến';
-  body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ Zn...', 'Đang lấy tồn kho & đơn giá trái cây mới nhất từ hệ thống.');
+  body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ ebongiu...', 'Đang lấy tồn kho & đơn giá trái cây mới nhất từ hệ thống.');
   overlay.style.display = 'flex';
 
   await loadCatalog(true, 'fruit_by_fruit', 6500);
@@ -2641,7 +2652,7 @@ async function openCoinWarehouseModal() {
 
   box.className = 'modal-box';
   title.textContent = '🪙 Kho Xu Nông Trại Trực Tuyến';
-  body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ Zn...', 'Đang đồng bộ trữ lượng Kho Xu mới nhất từ hệ thống.');
+  body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ ebongiu...', 'Đang đồng bộ trữ lượng Kho Xu mới nhất từ hệ thống.');
   overlay.style.display = 'flex';
 
   await loadCatalog(true, 'fruit_coin', 6500);
@@ -2692,7 +2703,7 @@ async function openCategoryPriceListModal(catKey) {
 
   box.className = 'modal-box';
   title.textContent = `🏷️ Bảng giá: ${VIEW_TITLES[catKey] || catKey}`;
-  body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ Zn...');
+  body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ ebongiu...');
   overlay.style.display = 'flex';
 
   await loadCatalog(true, catKey, 6500);
@@ -4167,8 +4178,8 @@ function renderAdminCtvPageHtml() {
         <div style="font-size:12.5px;color:var(--color-moon-mist);">
           ${
             isMaintenance
-              ? 'Toàn bộ tài khoản CTV đang đăng nhập hiện đang thấy màn hình <strong>"Hệ thống Zn đang bảo trì"</strong> và tạm khóa đặt đơn. Tài khoản Admin vẫn truy cập bình thường.'
-              : 'Khi bật nút <strong>Bảo trì</strong>, tất cả các tài khoản CTV đang đăng nhập sẽ ngay lập tức hiển thị <strong>"Hệ thống Zn đang bảo trì"</strong> (Admin vẫn dùng bình thường).'
+              ? 'Toàn bộ tài khoản CTV đang đăng nhập hiện đang thấy màn hình <strong>"Hệ thống ebongiu đang bảo trì"</strong> và tạm khóa đặt đơn. Tài khoản Admin vẫn truy cập bình thường.'
+              : 'Khi bật nút <strong>Bảo trì</strong>, tất cả các tài khoản CTV đang đăng nhập sẽ ngay lập tức hiển thị <strong>"Hệ thống ebongiu đang bảo trì"</strong> (Admin vẫn dùng bình thường).'
           }
         </div>
       </div>
@@ -4340,7 +4351,7 @@ function bindAdminCtvEvents() {
     const currentlyOn = Boolean(state.adminOverview?.settings?.maintenanceMode);
     const nextEnabled = !currentlyOn;
     const confirmText = nextEnabled
-      ? 'Bật chế độ Bảo trì?\n\nTất cả các tài khoản CTV đang đăng nhập sẽ hiển thị "Hệ thống Zn đang bảo trì" và tạm khóa đặt đơn. Tài khoản Admin vẫn truy cập bình thường.'
+      ? 'Bật chế độ Bảo trì?\n\nTất cả các tài khoản CTV đang đăng nhập sẽ hiển thị "Hệ thống ebongiu đang bảo trì" và tạm khóa đặt đơn. Tài khoản Admin vẫn truy cập bình thường.'
       : 'Tắt chế độ Bảo trì và mở lại hệ thống cho toàn bộ CTV?';
     if (!confirm(confirmText)) return;
     btn.disabled = true;
@@ -4446,7 +4457,10 @@ function openTopupCtvModal(ctvId, ctvName) {
     });
   });
 
-  body.querySelector('#btnConfirmTopupSubmit')?.addEventListener('click', async () => {
+  body.querySelector('#btnConfirmTopupSubmit')?.addEventListener('click', async (ev) => {
+    const btn = ev.currentTarget;
+    if (btn.disabled) return;
+    btn.disabled = true;
     const amount = Number(body.querySelector('#modalTopupAmt')?.value || 0);
     const note = body.querySelector('#modalTopupNote')?.value || '';
     try {
@@ -4457,6 +4471,8 @@ function openTopupCtvModal(ctvId, ctvName) {
       renderCurrentView();
     } catch (err) {
       showToast(err.message);
+    } finally {
+      btn.disabled = false;
     }
   });
 
@@ -4499,7 +4515,7 @@ function renderAdminSystemPageHtml() {
             <ol>
               <li>Vào <strong>neon.tech</strong> (đăng nhập bằng GitHub/Google, miễn phí 0đ trọn đời, không cần thẻ tín dụng) → Tạo Project mới (chọn Region gần Render như Singapore hoặc US East).</li>
               <li>Bấm <strong>Connect</strong> → Copy chuỗi kết nối PostgreSQL (bắt đầu bằng <code>postgresql://...</code>).</li>
-              <li>Vào Render Dashboard → Service ZnStudio → <strong>Environment</strong> → Thêm biến <code>DATABASE_URL</code> = chuỗi vừa copy → Lưu &amp; Deploy lại. Từ đó toàn bộ CTV, ví, đơn hàng và bảng giá sẽ <strong>không bao giờ bị mất</strong> kể cả khi Render ngủ hoặc tắt!</li>
+              <li>Vào Render Dashboard → dịch vụ BongPT → <strong>Environment</strong> → Thêm biến <code>DATABASE_URL</code> = chuỗi vừa copy → Lưu &amp; Deploy lại. Dữ liệu CTV, ví, đơn hàng và bảng giá được lưu trên PostgreSQL qua các lần Render khởi động lại.</li>
             </ol>
             <div style="font-size:12px;color:var(--color-fog-veil);">
               💡 Mẹo giữ web mượt không bị ngủ 15 phút: Tạo monitor miễn phí trên <strong>UptimeRobot</strong> hoặc <strong>cron-job.org</strong> gọi <code>https://&lt;domain-của-bạn&gt;/api/ping</code> mỗi 10 phút.
@@ -4570,7 +4586,7 @@ function bindAdminSystemEvents() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `znstudio-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      a.download = `ebongiu-backup-${new Date().toISOString().slice(0, 10)}.json`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -4712,7 +4728,7 @@ function bindGlobalEvents() {
       const p = await fetch('/api/ping', { headers: { Accept: 'application/json' } }).then(r => r.json()).catch(() => null);
       if (!p) return;
       if (p.maintenance) {
-        setCtvMaintenanceOverlay(true, 'Hệ thống Zn đang bảo trì');
+        setCtvMaintenanceOverlay(true, 'Hệ thống ebongiu đang bảo trì');
       } else if (state.maintenanceLocked) {
         setCtvMaintenanceOverlay(false);
         await initAuth();

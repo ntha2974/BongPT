@@ -119,8 +119,8 @@ function packStaticBuffer(rawBuf, mime) {
 function minifyHtmlDocument(html) {
   return String(html)
     .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/href="\/styles\.css"/g, 'href="/assets/zn.bundle.css"')
-    .replace(/<script\s+type="module"\s+src="\/app\.js"><\/script>/g, '<script src="/assets/zn.bundle.js" defer></script>')
+    .replace(/href="\/styles\.css"/g, 'href="/assets/ebongiu.bundle.css"')
+    .replace(/<script\s+type="module"\s+src="\/app\.js"><\/script>/g, '<script src="/assets/ebongiu.bundle.js" defer></script>')
     .replace(/>\s+</g, '><')
     .replace(/\s{2,}/g, ' ')
     .trim();
@@ -154,8 +154,8 @@ function ensureProtectedAssets() {
     const htmlMin = minifyHtmlDocument(htmlRaw);
 
     staticCache.set('index.html', packStaticBuffer(Buffer.from(htmlMin, 'utf8'), 'text/html; charset=utf-8'));
-    staticCache.set('assets/zn.bundle.js', packStaticBuffer(Buffer.from(jsOut), 'application/javascript; charset=utf-8'));
-    staticCache.set('assets/zn.bundle.css', packStaticBuffer(Buffer.from(cssMin, 'utf8'), 'text/css; charset=utf-8'));
+    staticCache.set('assets/ebongiu.bundle.js', packStaticBuffer(Buffer.from(jsOut), 'application/javascript; charset=utf-8'));
+    staticCache.set('assets/ebongiu.bundle.css', packStaticBuffer(Buffer.from(cssMin, 'utf8'), 'text/css; charset=utf-8'));
   } catch (err) {
     console.error('Asset bundle build failed:', err.message);
   }
@@ -200,7 +200,7 @@ app.use((req, res, next) => {
   if (req.path === '/') {
     if (serveCachedStatic(req, res, 'index.html')) return;
   }
-  if (cleanPath === 'assets/zn.bundle.js' || cleanPath === 'assets/zn.bundle.css') {
+  if (cleanPath === 'assets/ebongiu.bundle.js' || cleanPath === 'assets/ebongiu.bundle.css') {
     if (serveCachedStatic(req, res, cleanPath)) return;
   }
   if ((HAS_ESBUILD && BLOCKED_RAW_PATHS.has(cleanPath)) || BLOCKED_EXTENSIONS.test(cleanPath)) {
@@ -294,7 +294,7 @@ if (!process.env.DATABASE_URL && !fs.existsSync(DATA_DIR)) {
 
 const DEFAULT_DB = {
   settings: {
-    brandName: 'ZnStudio',
+    brandName: 'ebongiu',
     maintenanceMode: false,
     clientUpdateVersion: 0,
     defaultMarkup: 5000,
@@ -400,7 +400,15 @@ async function saveDb(data) {
     const json = JSON.stringify(data, null, 2);
     const tmpPath = `${DB_PATH}.tmp`;
     fs.writeFileSync(tmpPath, json, { encoding: 'utf8', mode: 0o600, flush: true });
-    fs.renameSync(tmpPath, DB_PATH);
+    for (let attempt = 1; ; attempt++) {
+      try {
+        fs.renameSync(tmpPath, DB_PATH);
+        break;
+      } catch (renameErr) {
+        if (attempt >= 3 || !['EPERM', 'EBUSY'].includes(renameErr?.code)) throw renameErr;
+        await new Promise(resolve => setTimeout(resolve, attempt * 25));
+      }
+    }
   } catch (err) {
     storageHealthy = false;
     throw storageError();
@@ -449,6 +457,10 @@ function normalizeDb(raw) {
   }
   // Preserve local accounts; never reset their passwords from deployment variables.
   let migrated = applyUpstreamEnvironment(merged);
+  if (['znstudio', 'znplay', 'bonglee'].includes(String(merged.settings.brandName || '').trim().toLowerCase())) {
+    merged.settings.brandName = DEFAULT_DB.settings.brandName;
+    migrated = true;
+  }
   for (const u of merged.users || []) {
     if (u.password && !String(u.password).startsWith('scrypt$')) {
       u.password = hashPassword(u.password);
@@ -479,7 +491,7 @@ if (process.env.DATABASE_URL) {
   const requireFile = importOnly;
   postgres = await openPostgres(process.env.DATABASE_URL, () => readSeed(requireFile).data, { importOnly });
   if (importOnly) {
-    console.log('Đã nhập dữ liệu ZnPlay vào PostgreSQL.');
+    console.log('Đã nhập dữ liệu ebongiu vào PostgreSQL.');
     process.exit(0);
   }
   const loaded = normalizeDb(postgres.state);
@@ -1150,7 +1162,7 @@ function getAuthUser(req) {
   return user;
 }
 
-const MAINTENANCE_MESSAGE = 'Hệ thống Zn đang bảo trì';
+const MAINTENANCE_MESSAGE = 'Hệ thống ebongiu đang bảo trì';
 
 function isMaintenanceActive() {
   return Boolean(db?.settings?.maintenanceMode);
@@ -1280,7 +1292,7 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
   if (user.isLocked) {
     return res.status(403).json({
       success: false,
-      message: 'Tài khoản của bạn đang tạm khóa. Vui lòng liên hệ Admin ZnStudio.',
+      message: 'Tài khoản của bạn đang tạm khóa. Vui lòng liên hệ Admin ebongiu.',
     });
   }
 
@@ -2506,7 +2518,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
       : undefined;
 
     const localOrder = {
-      id: `ZNP-${crypto.randomUUID()}`,
+      id: `EBONGIU-${crypto.randomUUID()}`,
       intentId: intent.id,
       remoteOrderId,
       category,
@@ -2753,7 +2765,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
         cancelRequested: !!lo.cancelRequested,
         requiresReview: !!lo.requiresReview,
         createdAt: lo.createdAt,
-        source: 'znplay',
+        source: 'ebongiu',
       }));
 
     // Admin also sees pre-existing orders synced from HoanNguyen
@@ -3172,7 +3184,7 @@ app.delete('/api/orders/:category/:remoteId', requireAuth, financialGuard, limit
     // Delete at upstream source FIRST (skip only if order was already cancelled at source earlier)
     if (!alreadyCancelled) {
       const r = await hnApiCall(`${meta.apiOrderPath}/${encodeURIComponent(remoteId)}`, 'DELETE', {
-        deletion_note: req.body?.deletion_note || 'Xóa đơn từ ZnStudio',
+        deletion_note: req.body?.deletion_note || 'Xóa đơn từ ebongiu',
       });
       if (r && r.success === false) {
         return res.status(400).json({
@@ -3443,7 +3455,7 @@ app.post('/api/admin/intents/:id/reconcile', asyncRoute(async (req, res) => {
     }
     const owner = db.users.find(u => u.id === intent.userId);
     if (!owner) return res.status(409).json({ success: false, message: 'Tài khoản đặt đơn không còn tồn tại.' });
-    const order = { id: `ZNP-${crypto.randomUUID()}`, intentId: intent.id, remoteOrderId,
+    const order = { id: `EBONGIU-${crypto.randomUUID()}`, intentId: intent.id, remoteOrderId,
       category: intent.category, categoryName: CATEGORY_METADATA[intent.category].menuLabel,
       summary: intent.summary, customer: intent.customer, costPrice: actualCost,
       sellPrice: intent.sellPrice, markupAmount: intent.sellPrice - actualCost,
@@ -3605,12 +3617,12 @@ app.post('/api/admin/maintenance', requireAdmin, asyncRoute(async (req, res) => 
     success: true,
     maintenanceMode: nextState,
     message: nextState
-      ? 'Đã BẬT chế độ bảo trì — tất cả CTV đang đăng nhập sẽ thấy "Hệ thống Zn đang bảo trì".'
+      ? 'Đã BẬT chế độ bảo trì — tất cả CTV đang đăng nhập sẽ thấy "Hệ thống ebongiu đang bảo trì".'
       : 'Đã TẮT chế độ bảo trì — các tài khoản CTV có thể sử dụng lại bình thường.',
   });
 }));
 
-// Notify all logged-in CTVs that a new Zn update is available (click banner to F5 reload)
+// Notify all logged-in CTVs that a new ebongiu update is available (click banner to F5 reload)
 app.post('/api/admin/notify-update', requireAdmin, asyncRoute(async (req, res) => {
   const prev = Number(db.settings.clientUpdateVersion || 0);
   const nextVer = Math.max(prev + 1, Date.now());
@@ -3620,7 +3632,7 @@ app.post('/api/admin/notify-update', requireAdmin, asyncRoute(async (req, res) =
   res.json({
     success: true,
     updateVersion: nextVer,
-    message: 'Đã gửi thông báo "Có cập nhật từ Zn, vui lòng bấm vào dòng này" tới toàn bộ CTV!',
+    message: 'Đã gửi thông báo "Có cập nhật từ ebongiu, vui lòng bấm vào dòng này" tới toàn bộ CTV!',
   });
 }));
 
@@ -3641,11 +3653,11 @@ app.get('/api/admin/backup/export', requireAdmin, (req, res) => {
     orderIntents: db.orderIntents,
     auditLog: db.auditLog,
   };
-  res.setHeader('Content-Disposition', `attachment; filename="znstudio-backup-${new Date().toISOString().slice(0, 10)}.json"`);
+  res.setHeader('Content-Disposition', `attachment; filename="ebongiu-backup-${new Date().toISOString().slice(0, 10)}.json"`);
   res.json({ success: true, backup: snapshot });
 });
 
-app.post('/api/admin/backup/import', requireAdmin, express.json({ limit: '2mb' }), asyncRoute(async (req, res) => {
+app.post('/api/admin/backup/import', requireAdmin, express.json({ limit: '10mb' }), asyncRoute(async (req, res) => {
   const raw = req.body?.backup || req.body;
   if (!raw || typeof raw !== 'object' || !Array.isArray(raw.users) || !raw.users.some(u => u && u.role === 'admin' && u.id && u.username && u.password)) {
     return res.status(400).json({ success: false, message: 'Tệp sao lưu không hợp lệ hoặc thiếu tài khoản quản trị viên.' });
@@ -3656,9 +3668,30 @@ app.post('/api/admin/backup/import', requireAdmin, express.json({ limit: '2mb' }
       return res.status(400).json({ success: false, message: `Trường ${name} trong tệp sao lưu không hợp lệ.` });
     }
   }
+  const seenUserIds = new Set();
+  const seenUsernames = new Set();
   for (const u of raw.users) {
-    if (!u || typeof u !== 'object' || typeof u.id !== 'string' || typeof u.username !== 'string' || !['admin', 'ctv'].includes(u.role) || !validMoney(Number(u.balance ?? 0))) {
+    const cleanUname = typeof u?.username === 'string' ? u.username.trim().toLowerCase() : '';
+    if (!u || typeof u !== 'object' || typeof u.id !== 'string' || !u.id.trim() || !cleanUname || !['admin', 'ctv'].includes(u.role) || !validMoney(Number(u.balance ?? 0))) {
       return res.status(400).json({ success: false, message: 'Danh sách tài khoản trong tệp sao lưu không hợp lệ.' });
+    }
+    if (seenUserIds.has(u.id) || seenUsernames.has(cleanUname)) {
+      return res.status(400).json({ success: false, message: 'Danh sách tài khoản trong tệp sao lưu có mã hoặc tên đăng nhập bị trùng.' });
+    }
+    seenUserIds.add(u.id);
+    seenUsernames.add(cleanUname);
+  }
+  for (const name of arrays) {
+    const list = raw[name] || [];
+    const seenIds = new Set();
+    for (const item of list) {
+      if (!item || typeof item !== 'object' || typeof item.id !== 'string' || !item.id.trim()) {
+        return res.status(400).json({ success: false, message: `Trường ${name} trong tệp sao lưu có bản ghi thiếu mã định danh.` });
+      }
+      if (seenIds.has(item.id)) {
+        return res.status(400).json({ success: false, message: `Trường ${name} trong tệp sao lưu có mã bản ghi bị trùng.` });
+      }
+      seenIds.add(item.id);
     }
   }
 
@@ -3901,7 +3934,7 @@ app.post('/api/admin/source/reconnect', requireAdmin, handleReconnectSource);
 app.post('/api/admin/ctv', requireAdmin, asyncRoute(async (req, res) => {
   const { name, username, email, password, phone, balance } = req.body || {};
   const cleanUsername = String(username || '').trim().toLowerCase();
-  const cleanEmail = String(email || `${cleanUsername}@znstudio.vn`).trim().toLowerCase();
+  const cleanEmail = String(email || `${cleanUsername}@ebongiu.invalid`).trim().toLowerCase();
 
   if (typeof name !== 'string' || !name.trim() || name.length > 100 || !/^[a-z0-9_.-]{3,50}$/.test(cleanUsername) ||
       typeof password !== 'string' || password.length < 12 || password.length > 128 || cleanEmail.length > 254 || String(phone || '').length > 30) {
@@ -4061,9 +4094,9 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
 });
 
-app.listen(PORT, HOST, async () => {
+const httpServer = app.listen(PORT, HOST, async () => {
   ensureProtectedAssets();
-  console.log(`ZnStudio Server running at http://localhost:${PORT} (storage: ${postgres ? 'postgresql' : 'json'})`);
+  console.log(`ebongiu Server running at http://localhost:${PORT} (storage: ${postgres ? 'postgresql' : 'json'})`);
   try {
     await hnApiCall('/api/settings?keys=is_send_task');
     console.log('HoanNguyen API verified via HTTPS.');
@@ -4089,3 +4122,20 @@ app.listen(PORT, HOST, async () => {
   }, 30000);
   if (typeof refreshTimer.unref === 'function') refreshTimer.unref();
 });
+
+let shuttingDown = false;
+async function gracefulShutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  try {
+    if (httpServer && typeof httpServer.close === 'function') httpServer.close();
+    if (postgres) {
+      await postgres.flush().catch(() => {});
+      await postgres.close().catch(() => {});
+    }
+  } finally {
+    if (typeof process.exit === 'function') process.exit(0);
+  }
+}
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);

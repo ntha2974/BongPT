@@ -1,7 +1,7 @@
 {
-  "name": "znplay-webplaypt",
+  "name": "ebongiu",
   "version": "1.0.0",
-  "description": "ZnPlay — Play Together Editorial Order & CTV Platform (ORYZO Darkroom Style)",
+  "description": "ebongiu — Hệ thống quản lý đơn Play Together và ví CTV",
   "type": "module",
   "main": "server.js",
   "scripts": {

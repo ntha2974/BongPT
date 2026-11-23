@@ -1,5 +1,5 @@
 /* ==========================================================================
-   ZNPLAY — AUTHKIT FROSTED GLASS MIDNIGHT THEME + SELLER SIDEBAR LAYOUT
+   EBONGIU — AUTHKIT FROSTED GLASS MIDNIGHT THEME + SELLER SIDEBAR LAYOUT
    ========================================================================== */
 
 @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap');
@@ -1086,10 +1086,10 @@ select.input-box {
   border: 3px solid rgba(180,75,117, 0.16);
   border-top-color: #a43869;
   border-right-color: #24705e;
-  animation: znSpin 0.8s linear infinite;
+  animation: ebongiuSpin 0.8s linear infinite;
 }
 
-@keyframes znSpin {
+@keyframes ebongiuSpin {
   to {
     transform: rotate(360deg);
   }

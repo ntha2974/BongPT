@@ -224,13 +224,15 @@ test('first visit and invalid session show login without automatic admin login',
   }, 'old-token');
   await expired.context.initAuth();
   assert.deepEqual(urls, ['/api/auth/me']);
-  assert.equal(expired.storage.has('znplay_token'), false);
+  assert.equal(expired.storage.has('ebongiu_token'), false);
 });
 
 test('a temporary connection failure keeps the session for the next page load', async () => {
   const client = createClient(async () => { throw new Error('offline'); }, 'existing-session');
   await client.context.initAuth();
-  assert.equal(client.storage.get('znplay_token'), 'existing-session');
+  assert.equal(client.storage.get('ebongiu_token'), 'existing-session');
+  assert.equal(client.storage.has('znplay_token'), false);
+  assert.equal(client.storage.has('bonglee_token'), false);
   assert.equal(client.state.user, null);
   assert.equal(client.element('appShell').style.display, 'none');
 });
@@ -695,6 +697,8 @@ test('ping responds immediately, catalog supports compression and invalidates ca
   const ping = await server.request('/api/ping');
   assert.equal(ping.status, 200);
   assert.equal(ping.body.ok, true);
+  const headPing = await fetch(`${server.base}/api/ping`, { method: 'HEAD' });
+  assert.equal(headPing.status, 200);
 
   const admin = await server.login('owner', 'owner-test-password');
   const cat1 = await server.request('/api/catalog', 'GET', admin.body.token);
@@ -721,14 +725,27 @@ test('admin backup export excludes upstream secrets and backup import restores C
   assert.equal(exported.body.backup.settings.hoanNguyen.token, '');
   assert.equal(exported.body.backup.users.length, 2);
 
-  // Reject malformed backup
+  // Reject malformed backup (empty users, missing record ID, duplicate ID, duplicate username) without corrupting live DB or storageHealthy
   assert.equal((await server.request('/api/admin/backup/import', 'POST', admin.body.token, { backup: { users: [] } })).status, 400);
+  const badMissingId = structuredClone(exported.body.backup);
+  badMissingId.localOrders = [{ remoteOrderId: 99, category: 'buff_tim' }];
+  assert.equal((await server.request('/api/admin/backup/import', 'POST', admin.body.token, { backup: badMissingId })).status, 400);
+  const badDupId = structuredClone(exported.body.backup);
+  badDupId.transactions = [{ id: 'dup-1', amount: 1000 }, { id: 'dup-1', amount: 2000 }];
+  assert.equal((await server.request('/api/admin/backup/import', 'POST', admin.body.token, { backup: badDupId })).status, 400);
+  const badDupUser = structuredClone(exported.body.backup);
+  badDupUser.users.push({ id: 'ctv_dup', username: 'SELLER', password: 'dup-ctv-password-123', name: 'Dup', role: 'ctv', balance: 0 });
+  assert.equal((await server.request('/api/admin/backup/import', 'POST', admin.body.token, { backup: badDupUser })).status, 400);
+  assert.equal((await server.request('/api/health')).status, 200);
+  assert.equal(server.db.users.length, 2);
 
-  // Modify backup (add a CTV) and restore while preserving upstream credentials
+  // Modify backup (add a CTV and legacy brandName 'ZNPLAY') and restore while preserving upstream credentials
   const modified = structuredClone(exported.body.backup);
-  modified.users.push({ id: 'ctv_restored', username: 'restored01', email: 'restored01@znplay.vn', password: 'restored-ctv-password-123', name: 'Restored CTV', phone: '', role: 'ctv', balance: 75000, isLocked: false, createdAt: new Date().toISOString() });
+  modified.settings.brandName = 'ZNPLAY';
+  modified.users.push({ id: 'ctv_restored', username: 'restored01', email: 'restored01@ebongiu.vn', password: 'restored-ctv-password-123', name: 'Restored CTV', phone: '', role: 'ctv', balance: 75000, isLocked: false, createdAt: new Date().toISOString() });
   const imported = await server.request('/api/admin/backup/import', 'POST', admin.body.token, { backup: modified });
   assert.equal(imported.status, 200);
+  assert.equal(server.db.settings.brandName, 'ebongiu');
   assert.equal(server.db.users.find(u => u.username === 'restored01')?.balance, 75000);
   assert.equal(server.db.settings.hoanNguyen.password, 'source-test-password');
   assert.equal(server.db.settings.hoanNguyen.token, 'test-upstream-token');
@@ -859,13 +876,13 @@ test('raw source files and dotfiles are blocked, minified bundle hides upstream 
   assert.equal(rootRes.headers.get('x-robots-tag'), 'noindex, nofollow');
   assert.equal(rootRes.headers.get('x-permitted-cross-domain-policies'), 'none');
   const htmlText = await rootRes.text();
-  assert.match(htmlText, /\/assets\/zn\.bundle\.js/);
-  assert.match(htmlText, /\/assets\/zn\.bundle\.css/);
+  assert.match(htmlText, /\/assets\/ebongiu\.bundle\.js/);
+  assert.match(htmlText, /\/assets\/ebongiu\.bundle\.css/);
   assert.doesNotMatch(htmlText, /<!--/);
   assert.doesNotMatch(htmlText, /hoannguyen/i);
 
   // 2. Minified JS & CSS bundles + ETag 304 + zero upstream brand leaks
-  const jsRes = await fetch(`${server.base}/assets/zn.bundle.js`);
+  const jsRes = await fetch(`${server.base}/assets/ebongiu.bundle.js`);
   assert.equal(jsRes.status, 200);
   const etag = jsRes.headers.get('etag');
   assert.ok(etag);
@@ -873,14 +890,14 @@ test('raw source files and dotfiles are blocked, minified bundle hides upstream 
   assert.doesNotMatch(jsText, /hoannguyen/i);
   assert.doesNotMatch(jsText, /SCREENSHOT 1/i);
   assert.ok(jsText.length < clientSource.length + toolsSource.length);
-  const js304 = await fetch(`${server.base}/assets/zn.bundle.js`, { headers: { 'If-None-Match': etag } });
+  const js304 = await fetch(`${server.base}/assets/ebongiu.bundle.js`, { headers: { 'If-None-Match': etag } });
   assert.equal(js304.status, 304);
 
-  const cssRes = await fetch(`${server.base}/assets/zn.bundle.css`);
+  const cssRes = await fetch(`${server.base}/assets/ebongiu.bundle.css`);
   assert.equal(cssRes.status, 200);
 
   // 3. Raw source files, dotfiles, source maps, and backend filenames return 404
-  for (const blocked of ['/app.js', '/tools.js', '/styles.css', '/index.html', '/.env', '/.git/config', '/server.js', '/package.json', '/assets/zn.bundle.js.map']) {
+  for (const blocked of ['/app.js', '/tools.js', '/styles.css', '/index.html', '/.env', '/.git/config', '/server.js', '/package.json', '/assets/ebongiu.bundle.js.map']) {
     const r = await fetch(`${server.base}${blocked}`);
     assert.equal(r.status, 404, `Expected 404 for ${blocked}`);
   }
@@ -1168,16 +1185,16 @@ test('admin maintenance toggle blocks logged-in and newly logging-in CTVs with m
   const ctvMe = await server.request('/api/auth/me', 'GET', seller.body.token);
   assert.equal(ctvMe.status, 503);
   assert.equal(ctvMe.body.code, 'MAINTENANCE');
-  assert.equal(ctvMe.body.message, 'Hệ thống Zn đang bảo trì');
+  assert.equal(ctvMe.body.message, 'Hệ thống ebongiu đang bảo trì');
 
   const ctvCat = await server.request('/api/catalog', 'GET', seller.body.token);
   assert.equal(ctvCat.status, 503);
-  assert.equal(ctvCat.body.message, 'Hệ thống Zn đang bảo trì');
+  assert.equal(ctvCat.body.message, 'Hệ thống ebongiu đang bảo trì');
 
   // New CTV login is also blocked with 503 maintenance message
   const ctvLoginBlocked = await server.login('seller', 'seller-test-password');
   assert.equal(ctvLoginBlocked.status, 503);
-  assert.equal(ctvLoginBlocked.body.message, 'Hệ thống Zn đang bảo trì');
+  assert.equal(ctvLoginBlocked.body.message, 'Hệ thống ebongiu đang bảo trì');
 
   // Admin continues accessing everything normally (login, me, overview, catalog)
   const adminRelogin = await server.login('owner', 'owner-test-password');
