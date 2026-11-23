@@ -966,15 +966,11 @@ function renderOrderCategoryPageHtml(catKey) {
                 catKey === 'weather_buff'
                   ? ''
                   : `
-                    <th>ĐANG GỬI</th>
-                    <th>HOÀN THÀNH</th>
-                    <th>THẤT BẠI</th>
                     <th>TIẾN ĐỘ</th>
                   `
               }
               <th>TRẠNG THÁI</th>
               <th>BẬT/TẮT</th>
-              <th>GHI CHÚ</th>
               <th>TẠO LÚC</th>
               ${catKey === 'weather_buff' ? '<th>LINK</th>' : state.user?.role === 'admin' ? '<th>THAO TÁC</th>' : ''}
             </tr>
@@ -1013,7 +1009,7 @@ function getFilteredCatOrders(catKey) {
 
 function renderCatOrdersTbodyHtml(catKey) {
   const filteredOrders = getFilteredCatOrders(catKey);
-  const colSpan = catKey === 'weather_buff' ? 9 : state.user?.role === 'admin' ? 13 : 12;
+  const colSpan = catKey === 'weather_buff' ? 8 : state.user?.role === 'admin' ? 9 : 8;
   if (filteredOrders.length === 0) {
     return `
       <tr>
@@ -1164,9 +1160,6 @@ function renderOrderTableRowHtml(o) {
         isWeather
           ? ''
           : `
-            <td>${formatNum(o.sendingCnt || 0)}</td>
-            <td style="color:#28754e;font-weight:600;">${formatNum(o.completedCnt || 0)}</td>
-            <td style="color:#a8304c;">${formatNum(o.failedCnt || 0)}</td>
             <td>
               <div style="font-size:12px;font-weight:600;">${pct}%</div>
             </td>
@@ -1179,9 +1172,6 @@ function renderOrderTableRowHtml(o) {
             ? `<button type="button" class="switch-btn ${o.isActive ? 'is-on' : ''}" role="switch" aria-checked="${Boolean(o.isActive)}" data-toggle-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="${escapeHtml(o.category)}" title="${!wbReadyToRun && !o.isActive ? 'Cần gán khách và chọn thời tiết trước khi bật' : 'Bật/Tắt đơn'}"></button>`
             : '—'
         }
-      </td>
-      <td style="font-size:12px;color:var(--color-fog-veil);max-width:160px;">
-        ${escapeHtml(o.note || '—')}
       </td>
       <td style="font-size:12px;color:var(--color-fog-veil);white-space:nowrap;">
         ${formatDateVi(o.createdAt)}
@@ -3011,15 +3001,11 @@ function renderOrderHistoryHtml() {
               <th>GÓI / VẬT PHẨM</th>
               <th>SỐ LƯỢNG</th>
               <th>GIÁ</th>
-              <th>ĐANG GỬI</th>
-              <th>HOÀN THÀNH</th>
-              <th>THẤT BẠI</th>
               <th>TIẾN ĐỘ</th>
               <th>TRẠNG THÁI</th>
               <th>BẬT/TẮT</th>
-              <th>GHI CHÚ</th>
               <th>TẠO LÚC</th>
-              <th>THAO TÁC</th>
+              ${state.user?.role === 'admin' ? '<th>THAO TÁC</th>' : ''}
             </tr>
           </thead>
           <tbody id="histOrdersTbody">
@@ -3041,8 +3027,9 @@ function renderOrderHistoryTbodyHtml() {
       String(o.remoteOrderId || o.id).toLowerCase().includes(q)
     );
   });
+  const colSpan = state.user?.role === 'admin' ? 9 : 8;
   if (list.length === 0) {
-    return `<tr><td colspan="13" style="text-align:center;padding:28px;color:var(--color-fog-veil);">${state.loadingOrders ? '<span class="loading-inline"><span class="loading-dot"></span>Đang đồng bộ lịch sử đơn...</span>' : 'Không có dữ liệu'}</td></tr>`;
+    return `<tr><td colspan="${colSpan}" style="text-align:center;padding:28px;color:var(--color-fog-veil);">${state.loadingOrders ? '<span class="loading-inline"><span class="loading-dot"></span>Đang đồng bộ lịch sử đơn...</span>' : 'Không có dữ liệu'}</td></tr>`;
   }
   return list.map((o) => renderOrderTableRowHtml(o)).join('');
 }
