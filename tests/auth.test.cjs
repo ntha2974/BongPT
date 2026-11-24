@@ -1173,14 +1173,106 @@ test('weather_buff full workflow: Admin pricing, package-first order creation, s
   assert.equal(listRes.body.orders[0].weather.weathers.length, 2);
   assert.equal(listRes.body.orders[0].weather.trackUrl, 'https://thoitietplay.us/track/weather/tok123abc987def');
 
-  // 10. Share-link endpoint enforces ownership and CTV cannot delete/cancel weather order
+  // The tracking link is private to its owner and a running order cannot be deleted by the CTV.
   const linkOwn = await server.request('/api/orders/weather_buff/7701/share-link', 'POST', seller.body.token);
   assert.equal(linkOwn.status, 200);
   assert.equal(linkOwn.body.url, 'https://thoitietplay.us/track/weather/tok123abc987def');
   const linkOther = await server.request('/api/orders/weather_buff/7701/share-link', 'POST', seller2.body.token);
   assert.equal(linkOther.status, 403);
   const delCtv = await server.request('/api/orders/weather_buff/7701', 'DELETE', seller.body.token);
-  assert.equal(delCtv.status, 403);
+  assert.equal(delCtv.status, 409);
+});
+
+test('empty weather cancellation verifies age, owner and live progress, refunds the original sale once, and updates admin totals', async t => {
+  let spent = 2000;
+  const remote = { id: 71, status: 'pending', is_active: false, sending_cnt: 0, failed_cnt: 0, completed_cnt: 0,
+    slots: [{ slot_index: 0, customer_id: null }], weathers: [] };
+  let deletes = 0;
+  let rejectDelete = true;
+  const server = await startTestServer(t, async (url, options) => {
+    const path = new URL(url).pathname;
+    if (path === '/api/seller-settlements') return Response.json({ data: { weekly_limit: { spent } } });
+    if (path === '/api/weather-buff-orders') return Response.json({ data: { data: [remote] } });
+    if (options.method === 'DELETE') {
+      deletes++;
+      if (rejectDelete) return Response.json({ success: false }, { status: 422 });
+      await new Promise(resolve => setTimeout(resolve, 20));
+      spent = 0;
+      return Response.json({ success: true });
+    }
+    return financeSource()(url, options);
+  }, { seed(data) {
+    data.users.push({ id: 'second', username: 'second', name: 'Second', password: 'second-seller-password', role: 'ctv', balance: 1000 });
+    data.localOrders.push({ id: 'weather-71', category: 'weather_buff', remoteOrderId: 71, status: 'pending',
+      isActive: false, totalCnt: 10, costPrice: 2000, sellPrice: 5700, markupAmount: 3700, createdAt: new Date().toISOString(),
+      weather: { slots: [], weathers: [] }, placedBy: { id: 'seller', role: 'ctv', name: 'Seller' } });
+  } });
+  const seller = (await server.login('seller', 'seller-test-password')).body.token;
+  const other = (await server.login('second', 'second-seller-password')).body.token;
+  const admin = (await server.login('owner', 'owner-test-password')).body.token;
+  const remove = (token = seller) => server.request('/api/orders/weather_buff/71', 'DELETE', token, { sellPrice: 99999 });
+  const monitor = async () => (await server.request('/api/admin/monitor', 'GET', admin)).body;
+  assert.equal((await monitor()).payment.amount, 53000);
+  assert.equal((await remove(other)).status, 403);
+  assert.equal((await remove()).status, 409);
+  server.db.localOrders[0].createdAt = new Date(Date.now() - 15000).toISOString();
+  for (const [key, value] of Object.entries({ slots: [{customer_id: 22}], weathers: [{quantity: 2}], completed_cnt: 1,
+    failed_cnt: 1, sending_cnt: 1, remote_ref: 'assigned', casting: {}, is_active: true, status: 'completed' })) {
+    const previous = remote[key];
+    remote[key] = value;
+    assert.equal((await remove()).status, 409, key);
+    remote[key] = previous;
+  }
+  assert.equal(deletes, 0);
+  assert.equal((await remove()).status, 400);
+  assert.equal((await monitor()).payment.amount, 53000);
+  assert.equal(server.db.transactions.length, 0);
+  rejectDelete = false;
+  const results = await Promise.all([remove(), remove()]);
+  assert.deepEqual(results.map(r => r.status).sort(), [200, 409]);
+  assert.equal(results.find(r => r.status === 200).body.userBalance, 55700);
+  assert.equal((await remove()).status, 403);
+  assert.equal(deletes, 2);
+  assert.equal(server.db.transactions.length, 1);
+  assert.equal(server.db.transactions[0].amount, 5700);
+  const dashboard = await monitor();
+  assert.equal(dashboard.payment.amount, 56700);
+  assert.equal(dashboard.ctvs.find(u => u.id === 'seller').orderCount, 0);
+  assert.ok(dashboard.events.some(e => e.details?.refundedAmount === 5700));
+  const overview = (await server.request('/api/admin/overview', 'GET', admin)).body;
+  assert.equal(overview.stats.totalRevenue, 0);
+  assert.equal(overview.stats.totalProfit, 0);
+  spent = null;
+  assert.equal((await monitor()).payment.amount, null);
+});
+
+test('unconfirmed source deletion stays in admin reconciliation until a verified, single refund', async t => {
+  const order = { id: 'uncertain-weather', category: 'weather_buff', remoteOrderId: 72, status: 'pending',
+    createdAt: new Date(Date.now() - 60000).toISOString(), isActive: false, weather: { slots: [], weathers: [] },
+    costPrice: 2000, sellPrice: 5100, placedBy: { id: 'seller', role: 'ctv' } };
+  const server = await startTestServer(t, async (url, options) => {
+    if (options.method === 'DELETE') throw new Error('Source timed out');
+    if (new URL(url).pathname === '/api/weather-buff-orders') return Response.json({ data: { data: [{
+      id: 72, status: 'pending', is_active: false, sending_cnt: 0, completed_cnt: 0, failed_cnt: 0, slots: [], weathers: [],
+    }] } });
+    return financeSource()(url, options);
+  }, { seed(data) { data.localOrders.push(order); } });
+  const seller = (await server.login('seller', 'seller-test-password')).body.token;
+  const admin = (await server.login('owner', 'owner-test-password')).body.token;
+  const remove = () => server.request('/api/orders/weather_buff/72', 'DELETE', seller);
+  assert.equal((await remove()).status, 409);
+  assert.equal((await remove()).status, 409);
+  assert.equal(server.db.transactions.length, 0);
+  assert.equal((await server.request('/api/admin/monitor', 'GET', admin)).body.cancellations[0].weatherDeletePending, true);
+  const review = { confirmed: true, amount: 5100, sourceRefund: 2000, note: 'Verified deletion and full credit at source.', idempotency_key: crypto.randomUUID() };
+  const refund = () => server.request('/api/admin/orders/uncertain-weather/refund', 'POST', admin, review);
+  assert.equal((await refund()).status, 409);
+  review.verifiedDeleted = true;
+  assert.equal((await refund()).status, 200);
+  assert.equal((await refund()).status, 409);
+  assert.equal(server.db.transactions.length, 1);
+  assert.equal(server.db.localOrders.length, 0);
+  assert.equal(server.db.users.find(u => u.id === 'seller').balance, 55100);
 });
 
 test('admin per-CTV monitor endpoint returns isolated orders, wallet transactions, and activity logs without secrets', async t => {

@@ -617,7 +617,7 @@ async function loadOrders(forceRefresh = false, timeoutMs = 6500) {
     const r = await apiFetch(`/api/orders?category=all${forceRefresh ? '&refresh=1' : ''}`, 'GET', null, timeoutMs);
     if (r.success && state.token === requestToken) {
       const nextOrders = r.orders || [];
-      const sig = `${nextOrders.length}:${nextOrders.map(o => `${o.id}:${o.status}:${o.isActive}:${o.completedCnt}:${o.sendingCnt}:${o.failedCnt}:${o.cancelRequested ? 1 : 0}`).join('|')}`;
+      const sig = `${nextOrders.length}:${nextOrders.map(o => `${o.id}:${o.status}:${o.isActive}:${o.completedCnt}:${o.sendingCnt}:${o.failedCnt}:${o.cancelRequested ? 1 : 0}:${o.weatherDeleteAt || ''}`).join('|')}`;
       const changed = sig !== state.lastOrdersSig;
       state.lastOrdersSig = sig;
       state.orders = nextOrders;
@@ -1053,7 +1053,7 @@ function renderOrderTableRowHtml(o) {
       : '';
 
   const isWeather = o.category === 'weather_buff';
-  const canEditWeather = isWeather && o.remoteOrderId && !['completed', 'cancelled'].includes(o.status) && !o.requiresReview;
+  const canEditWeather = isWeather && o.remoteOrderId && !['completed', 'cancelled'].includes(o.status) && !o.requiresReview && !o.cancelRequested;
   const wbSlots = isWeather ? (o.weather?.slots || []) : [];
   const wbHasCust = isWeather ? wbSlots.some(s => s.customer_id || s.customer) || Boolean(o.customer?.customerId) : true;
   const wbLines = isWeather ? (o.weather?.weathers || []) : [];
@@ -1142,6 +1142,8 @@ function renderOrderTableRowHtml(o) {
           ${
             isAdmin && o.remoteOrderId && o.status !== 'cancelled'
               ? `<div><button type="button" class="btn-frost" style="padding:3px 8px;font-size:10px;color:#ab334a;" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="weather_buff">Hủy tại nguồn</button></div>`
+              : !isAdmin && o.weatherDeleteAt
+              ? `<div><button type="button" class="btn-frost" disabled data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="weather_buff" data-unlock-at="${Number(o.weatherDeleteAt)}">Xóa đơn</button></div>`
               : ''
           }
         </div>
@@ -1180,7 +1182,7 @@ function renderOrderTableRowHtml(o) {
       <td>${statusBadge}</td>
       <td>
         ${
-          o.remoteOrderId && !['completed', 'cancelled'].includes(o.status) && !o.requiresReview
+          o.remoteOrderId && !['completed', 'cancelled'].includes(o.status) && !o.requiresReview && !o.cancelRequested
             ? `<button type="button" class="switch-btn ${o.isActive ? 'is-on' : ''}" role="switch" aria-checked="${Boolean(o.isActive)}" data-toggle-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="${escapeHtml(o.category)}" title="${!wbReadyToRun && !o.isActive ? 'Cần gán khách và chọn thời tiết trước khi bật' : 'Bật/Tắt đơn'}"></button>`
             : '—'
         }
@@ -1335,38 +1337,55 @@ function bindOrderRowActionButtons() {
     });
   });
 
-  if (state.user?.role === 'admin') {
-    document.querySelectorAll('[data-delete-order]').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        const remId = btn.dataset.deleteOrder;
-        const cat = btn.dataset.orderCat;
-        const ord = state.orders.find((o) => o.category === cat && String(o.remoteOrderId) === String(remId));
-        let confirmMsg = `Hủy & xóa đơn #${remId} tại nguồn?`;
-        if (ord?.placedBy?.role === 'ctv') {
-          if (ord.status === 'completed') {
-            confirmMsg = `Xóa đơn #${remId} đã hoàn thành khỏi hệ thống? (Đơn đã giao đủ nên không hoàn tiền ví CTV.)`;
-          } else if (Number(ord.completedCnt || 0) > 0 && Number(ord.totalCnt || 0) > 0) {
-            confirmMsg = `Hủy & xóa đơn #${remId} tại nguồn (đã chạy ${ord.completedCnt}/${ord.totalCnt})? Hệ thống sẽ xóa đơn và tự động hoàn phần chưa chạy vào ví CTV "${ord.placedBy.name}".`;
-          } else {
-            confirmMsg = `Hủy & xóa đơn #${remId} tại nguồn? Sau khi nguồn xóa thành công, đơn sẽ mất khỏi bảng và tự động hoàn lại ${formatVnd(ord.sellPrice)} vào ví CTV "${ord.placedBy.name}".`;
-          }
+  document.querySelectorAll('[data-delete-order]').forEach((btn) => {
+    if (btn.dataset.unlockAt) {
+      const tick = () => {
+        if (!btn.isConnected) return;
+        const remaining = Number(btn.dataset.unlockAt) - Date.now();
+        btn.disabled = remaining > 0;
+        btn.textContent = remaining > 0 ? `Xóa sau ${Math.ceil(remaining / 1000)} giây` : 'Xóa đơn';
+        if (remaining > 0) setTimeout(tick, Math.min(1000, remaining));
+      };
+      tick();
+    }
+    btn.addEventListener('click', async () => {
+      const remId = btn.dataset.deleteOrder;
+      const cat = btn.dataset.orderCat;
+      const ord = state.orders.find((o) => o.category === cat && String(o.remoteOrderId) === String(remId));
+      let confirmMsg = `Hủy & xóa đơn #${remId} tại nguồn?`;
+      if (state.user?.role === 'ctv') {
+        if (!ord?.weatherDeleteAt) return;
+        confirmMsg = `Xóa đơn Buff Thời Tiết #${remId} và hoàn ${formatVnd(ord.sellPrice)} vào ví của bạn?`;
+      } else if (ord?.placedBy?.role === 'ctv') {
+        if (ord.status === 'completed') {
+          confirmMsg = `Xóa đơn #${remId} đã hoàn thành khỏi hệ thống? (Đơn đã giao đủ nên không hoàn tiền ví CTV.)`;
+        } else if (Number(ord.completedCnt || 0) > 0 && Number(ord.totalCnt || 0) > 0) {
+          confirmMsg = `Hủy & xóa đơn #${remId} tại nguồn (đã chạy ${ord.completedCnt}/${ord.totalCnt})? Hệ thống sẽ xóa đơn và tự động hoàn phần chưa chạy vào ví CTV "${ord.placedBy.name}".`;
+        } else {
+          confirmMsg = `Hủy & xóa đơn #${remId} tại nguồn? Sau khi nguồn xóa thành công, đơn sẽ mất khỏi bảng và tự động hoàn lại ${formatVnd(ord.sellPrice)} vào ví CTV "${ord.placedBy.name}".`;
         }
-        if (!confirm(confirmMsg)) return;
-        btn.disabled = true;
-        try {
-          const res = await apiFetch(`/api/orders/${cat}/${remId}`, 'DELETE', {
-            deletion_note: 'Xóa đơn từ ebongiu',
-          });
-          showToast(res.message || 'Đã hủy & xóa đơn hàng');
-          await Promise.all([loadOrders(true), initAuth()]);
-          renderCurrentView();
-        } catch (err) {
-          showToast(`Không thể xóa: ${err.message}`);
-          btn.disabled = false;
+      }
+      if (!confirm(confirmMsg)) return;
+      btn.disabled = true;
+      try {
+        const res = await apiFetch(`/api/orders/${cat}/${remId}`, 'DELETE', {
+          deletion_note: 'Xóa đơn từ ebongiu',
+        });
+        showToast(res.message || 'Đã hủy & xóa đơn hàng');
+        if (res.userBalance != null && state.user?.role === 'ctv') {
+          state.user.balance = res.userBalance;
+          updateShellAuthUI();
         }
-      });
+        state.orders = state.orders.filter(o => o !== ord);
+        await Promise.all([loadOrders(true), loadAdminOverview()]);
+        renderCurrentView();
+      } catch (err) {
+        showToast(`Không thể xóa: ${err.message}`);
+        btn.disabled = false;
+        if (await loadOrders(true)) renderCurrentView();
+      }
     });
-  }
+  });
 }
 
 function renderSyncLoadingHtml(message = 'Đang cập nhật bảng giá từ ebongiu...', sub = 'Đang đồng bộ trạng thái hoạt động và giá gốc mới nhất từ hệ thống để đảm bảo chính xác tuyệt đối.') {
