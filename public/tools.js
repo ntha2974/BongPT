@@ -27,6 +27,8 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
     if (a === 'POST /customer/search-ingame') return '🔍 Tìm nhân vật trong game';
     if (a === 'POST /customer/select-ingame') return '✓ Chọn nhân vật khách hàng';
     if (a === 'POST /customer/resolve-role-id') return '🆔 Tra cứu khách theo Role ID';
+    if (a === 'POST /tools/identity/lookup') return '🔎 Trích xuất ID Game / Tên nhân vật';
+    if (a === 'POST /tools/identity/profile') return '👤 Xem hồ sơ nhân vật chi tiết';
     if (/^POST \/admin\/ctv\/[^/]+\/balance$/.test(a)) return '💰 Admin nạp / trừ ví CTV';
     if (/^PUT \/admin\/ctv\/[^/]+$/.test(a)) return '⚙️ Admin cập nhật tài khoản CTV';
     if (a === 'POST /admin/ctv') return '➕ Admin tạo tài khoản CTV';
@@ -47,6 +49,7 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
     if (details.amount !== undefined) parts.push(`Số tiền: ${Number(details.amount) >= 0 ? '+' : ''}${money(details.amount)}`);
     if (details.balanceAfter !== undefined) parts.push(`Sau GD: ${money(details.balanceAfter)}`);
     if (details.nickname) parts.push(`Tên tìm: ${details.nickname}${details.resultCount !== undefined ? ` (${details.resultCount} KQ)` : ''}`);
+    if (details.query) parts.push(`Tra cứu: ${details.query}${details.resultCount !== undefined ? ` (${details.resultCount} KQ)` : ''}`);
     if (details.roleId) parts.push(`Role ID: ${details.roleId}`);
     if (details.suid) parts.push(`SUID: ${details.suid}`);
     if (details.totalQty !== undefined) parts.push(`Tổng thời tiết: ${details.totalQty} lần`);
@@ -59,11 +62,600 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
     return raw === '{}' ? '—' : raw;
   }
 
-  function renderIdentityToolsHtml() {
-    return panel('2. Trích xuất tên nhân vật / ID Game', '<p class="tool-note">Chưa mở. Tính năng này sẽ được bổ sung ở phiên bản sau.</p>');
+  const IDENTITY_MODES = [
+    { key: 'auto', label: '✨ Tự động', placeholder: 'Nhập Tên nhân vật (VD: Kitty), ID Game (RK8C-CKHL-LMGG) hoặc SUID...' },
+    { key: 'name', label: '👤 Tên → ID Game', placeholder: 'Nhập tên nhân vật trong game (VD: Kitty, Bong)...' },
+    { key: 'role_id', label: '🆔 ID Game → Tên', placeholder: 'Nhập ID Game / Role ID (VD: RK8C-CKHL-LMGG)...' },
+    { key: 'suid', label: '🔢 SUID → Tên & ID', placeholder: 'Nhập ID số SUID (VD: 1070894579678792892)...' },
+  ];
+
+  function getIdentityState() {
+    if (!state.identityTool) {
+      state.identityTool = {
+        mode: 'auto',
+        query: '',
+        loading: false,
+        error: '',
+        clientStatus: { loading: false, connected: false, availableClients: null, checkedAt: null, error: '' },
+        lastResult: null, // { query, mode, resolvedBy, decoded, notFoundInGame, players }
+        selectedSuid: null,
+        selectedDetail: null,
+        detailLoadingSuid: null,
+        detailError: '',
+        history: [],
+      };
+    }
+    return state.identityTool;
   }
 
-  function bindIdentityToolsEvents() {}
+  function formatInt(val) {
+    const n = Number(val);
+    if (!Number.isFinite(n)) return '—';
+    return Math.round(n).toLocaleString('vi-VN');
+  }
+
+  async function copyToClipboard(text, label, btnEl) {
+    const val = String(text || '').trim();
+    if (!val) {
+      showToast('Không có dữ liệu để sao chép.');
+      return;
+    }
+    let ok = false;
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(val);
+        ok = true;
+      }
+    } catch {}
+    if (!ok) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = val;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch {}
+    }
+    if (!ok) {
+      showToast('Trình duyệt không cho phép sao chép tự động.');
+      return;
+    }
+    showToast(`Đã sao chép ${label}: ${val}`);
+    if (btnEl) {
+      const orig = btnEl.dataset.origLabel || btnEl.textContent;
+      btnEl.dataset.origLabel = orig;
+      btnEl.textContent = '✓ Đã chép';
+      btnEl.classList.add('is-copied');
+      clearTimeout(Number(btnEl.dataset.copyTimer || 0));
+      const tid = setTimeout(() => {
+        btnEl.textContent = orig;
+        btnEl.classList.remove('is-copied');
+      }, 1600);
+      btnEl.dataset.copyTimer = String(tid);
+    }
+  }
+
+  async function loadIdentityClientStatus(force = false) {
+    const idState = getIdentityState();
+    if (idState.clientStatus.loading) return;
+    idState.clientStatus = { ...idState.clientStatus, loading: true, error: '' };
+    if (state.currentView === 'identity_tools') renderCurrentView();
+    try {
+      const r = await apiFetch(`/api/tools/game-clients${force ? '?refresh=1' : ''}`);
+      idState.clientStatus = {
+        loading: false,
+        connected: Boolean(r.connected),
+        availableClients: r.availableClients ?? null,
+        checkedAt: r.checkedAt || new Date().toISOString(),
+        error: '',
+      };
+    } catch (error) {
+      idState.clientStatus = {
+        loading: false,
+        connected: false,
+        availableClients: null,
+        checkedAt: new Date().toISOString(),
+        error: error.message || 'Không thể lấy client từ nguồn.',
+      };
+    }
+    if (state.currentView === 'identity_tools') renderCurrentView();
+  }
+
+  async function loadIdentityProfileDetail(player) {
+    if (!player?.suid) return;
+    const idState = getIdentityState();
+    const suid = String(player.suid);
+    idState.selectedSuid = suid;
+    idState.selectedDetail = player.detailLoaded ? player : { ...player };
+    idState.detailError = '';
+    if (player.detailLoaded) {
+      idState.detailLoadingSuid = null;
+      if (state.currentView === 'identity_tools') renderCurrentView();
+      return;
+    }
+    idState.detailLoadingSuid = suid;
+    if (state.currentView === 'identity_tools') renderCurrentView();
+    try {
+      const r = await apiFetch('/api/tools/identity/profile', 'POST', { suid });
+      if (r.availableClients !== undefined && r.availableClients !== null) {
+        idState.clientStatus = {
+          loading: false,
+          connected: true,
+          availableClients: r.availableClients,
+          checkedAt: new Date().toISOString(),
+          error: '',
+        };
+      }
+      if (idState.selectedSuid !== suid) return;
+      if (r.player) {
+        const merged = {
+          ...player,
+          ...r.player,
+          regionName: r.player.regionName || player.regionName || r.player.region || player.region,
+          onlineStatus: r.player.onlineStatus || player.onlineStatus || '',
+          photoUrl: r.player.photoUrl || player.photoUrl || null,
+          portraitUrl: r.player.portraitUrl || player.portraitUrl || null,
+          detailLoaded: true,
+        };
+        idState.selectedDetail = merged;
+        if (Array.isArray(idState.lastResult?.players)) {
+          idState.lastResult.players = idState.lastResult.players.map((p) => (p.suid === suid ? merged : p));
+        }
+      }
+    } catch (error) {
+      if (idState.selectedSuid === suid) {
+        idState.detailError = error.message || 'Chưa tải được chỉ số chi tiết từ client game.';
+      }
+    } finally {
+      if (idState.detailLoadingSuid === suid) idState.detailLoadingSuid = null;
+      if (state.currentView === 'identity_tools') renderCurrentView();
+    }
+  }
+
+  async function runIdentityLookup(customQuery, customMode) {
+    const idState = getIdentityState();
+    const q = String(customQuery !== undefined ? customQuery : idState.query).trim();
+    const mode = customMode || idState.mode || 'auto';
+    idState.query = q;
+    idState.mode = mode;
+    if (!q) {
+      showToast('Vui lòng nhập Tên nhân vật hoặc ID Game (Role ID) cần trích xuất.');
+      return;
+    }
+    idState.loading = true;
+    idState.error = '';
+    idState.detailError = '';
+    idState.selectedSuid = null;
+    idState.selectedDetail = null;
+    idState.detailLoadingSuid = null;
+    if (state.currentView === 'identity_tools') renderCurrentView();
+
+    try {
+      const r = await apiFetch('/api/tools/identity/lookup', 'POST', { query: q, mode });
+      if (r.availableClients !== undefined && r.availableClients !== null) {
+        idState.clientStatus = {
+          loading: false,
+          connected: true,
+          availableClients: r.availableClients,
+          checkedAt: new Date().toISOString(),
+          error: '',
+        };
+      }
+      const players = Array.isArray(r.players) ? r.players : [];
+      idState.lastResult = {
+        query: q,
+        mode: r.mode || mode,
+        resolvedBy: r.resolvedBy || mode,
+        decoded: r.decoded || null,
+        notFoundInGame: Boolean(r.notFoundInGame),
+        players,
+      };
+      idState.history = [q, ...idState.history.filter((item) => item.toLowerCase() !== q.toLowerCase())].slice(0, 6);
+      idState.loading = false;
+
+      if (players.length === 1) {
+        idState.selectedSuid = players[0].suid;
+        idState.selectedDetail = players[0];
+        if (state.currentView === 'identity_tools') renderCurrentView();
+        if (!players[0].detailLoaded) {
+          loadIdentityProfileDetail(players[0]);
+        }
+        return;
+      }
+    } catch (error) {
+      idState.loading = false;
+      idState.error = error.message || 'Lỗi khi trích xuất dữ liệu nhân vật.';
+      showToast(idState.error);
+    }
+    if (state.currentView === 'identity_tools') renderCurrentView();
+  }
+
+  function renderPlayerAvatarHtml(player, sizeClass = '') {
+    const initial = esc((String(player?.nickname || '?').trim().charAt(0) || '?').toUpperCase());
+    const primarySrc = player?.portraitUrl || player?.photoUrl || '';
+    const fallbackSrc = player?.portraitUrl && player?.photoUrl ? player.photoUrl : '';
+    const level = Number(player?.achievementLevel || 0);
+    return `
+      <div class="id-tool-avatar-wrap ${sizeClass}">
+        ${primarySrc
+          ? `<img class="id-tool-avatar-img" src="${esc(primarySrc)}" ${fallbackSrc ? `data-fallback-src="${esc(fallbackSrc)}"` : ''} alt="${esc(player?.nickname || 'Avatar')}" loading="lazy" referrerpolicy="no-referrer" />`
+          : ''}
+        <div class="id-tool-avatar-fallback" ${primarySrc ? 'style="display:none;"' : ''}>${initial}</div>
+        ${level > 0 ? `<span class="id-tool-level-pill">Lv.${level}</span>` : ''}
+      </div>
+    `;
+  }
+
+  function renderCopyRowHtml(label, value, copyLabel, highlight = false) {
+    const safeVal = String(value || '').trim();
+    if (!safeVal) return '';
+    return `
+      <div class="id-tool-copy-row ${highlight ? 'is-primary' : ''}">
+        <div class="id-tool-copy-meta">
+          <span class="id-tool-copy-label">${esc(label)}</span>
+          <code class="id-tool-copy-value">${esc(safeVal)}</code>
+        </div>
+        <button type="button" class="${highlight ? 'btn-violet' : 'btn-frost'} id-tool-copy-btn" data-copy-value="${esc(safeVal)}" data-copy-label="${esc(copyLabel)}">
+          📋 Sao chép
+        </button>
+      </div>
+    `;
+  }
+
+  function renderSelectedPassportHtml(idState) {
+    const p = idState.selectedDetail;
+    if (!p) return '';
+    const isLoadingDetail = idState.detailLoadingSuid === p.suid;
+    const regionLabel = p.regionName || p.region || '';
+    const stats = p.stats;
+    const resolvedBadge = idState.lastResult?.resolvedBy === 'role_id'
+      ? '<span class="badge-tag violet">Trích xuất từ ID Game (Role ID)</span>'
+      : idState.lastResult?.resolvedBy === 'suid'
+      ? '<span class="badge-tag violet">Trích xuất từ ID số (SUID)</span>'
+      : '<span class="badge-tag green">Hồ sơ trực tiếp từ Game</span>';
+
+    return `
+      <section class="glass-panel id-tool-passport" id="identityPassportPanel">
+        <div class="panel-title-row" style="flex-wrap:wrap;gap:10px;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span class="panel-title-text">🪪 Hồ sơ trích xuất nhân vật</span>
+            ${resolvedBadge}
+          </div>
+          <div class="action-row">
+            ${!p.detailLoaded && !isLoadingDetail ? `<button type="button" class="btn-frost" id="btnIdentityLoadDetail">📊 Tải chỉ số hồ sơ</button>` : ''}
+            ${(idState.lastResult?.players?.length || 0) > 1 ? `<button type="button" class="btn-frost" id="btnIdentityClosePassport">✕ Đóng chi tiết</button>` : ''}
+          </div>
+        </div>
+
+        <div class="id-tool-passport-grid">
+          <div class="id-tool-passport-hero">
+            ${renderPlayerAvatarHtml(p, 'is-lg')}
+            <div class="id-tool-passport-heading">
+              <div class="id-tool-passport-name">${esc(p.nickname || 'Chưa có tên')}</div>
+              <div class="id-tool-meta-chips">
+                ${regionLabel ? `<span class="badge-tag violet">📍 ${esc(regionLabel)}</span>` : ''}
+                ${p.achievementLevel ? `<span class="badge-tag amber">⭐ Cấp ${p.achievementLevel}</span>` : ''}
+                ${p.isOnline ? '<span class="badge-tag green">🟢 Đang online</span>' : p.onlineStatus ? `<span class="badge-tag">${esc(p.onlineStatus)}</span>` : p.lastLogin ? `<span class="badge-tag">🕒 Đăng nhập: ${esc(p.lastLogin)}</span>` : ''}
+              </div>
+              ${p.introStr ? `<p class="id-tool-bio">“${esc(p.introStr)}”</p>` : ''}
+            </div>
+          </div>
+
+          <div class="id-tool-copy-stack">
+            ${renderCopyRowHtml('Tên nhân vật (In-game)', p.nickname || '—', 'Tên nhân vật', false)}
+            ${renderCopyRowHtml('ID Game (Role ID)', p.roleId || '—', 'ID Game (Role ID)', true)}
+            ${renderCopyRowHtml('ID số (SUID / Giftcode)', p.suid || '—', 'SUID', false)}
+          </div>
+        </div>
+
+        ${isLoadingDetail ? `<div class="tool-note" style="margin-top:12px;">⏳ Đang lấy thêm chỉ số tim, lượt thăm & bạn bè từ client game...</div>` : ''}
+        ${idState.detailError ? `<div class="tool-note" style="margin-top:12px;color:#a5364b;">⚠️ ${esc(idState.detailError)}</div>` : ''}
+        ${stats ? `
+          <div class="id-tool-stats-grid">
+            <div class="id-tool-stat-box"><span>💗 Tim nhân vật</span><strong>${formatInt(stats.userLikes)}</strong></div>
+            <div class="id-tool-stat-box"><span>🏡 Tim nhà</span><strong>${formatInt(stats.homeLikes)}</strong></div>
+            <div class="id-tool-stat-box"><span>👥 Người theo dõi</span><strong>${formatInt(stats.followerCount)}</strong></div>
+            ${stats.friendCount !== null ? `<div class="id-tool-stat-box"><span>🤝 Bạn bè</span><strong>${formatInt(stats.friendCount)}</strong></div>` : ''}
+            <div class="id-tool-stat-box"><span>👀 Thăm hồ sơ</span><strong>${formatInt(stats.totalProfileVisitCount)}</strong></div>
+            <div class="id-tool-stat-box"><span>🚪 Thăm nhà</span><strong>${formatInt(stats.totalHomeVisitCount)}</strong></div>
+          </div>
+        ` : ''}
+      </section>
+    `;
+  }
+
+  function renderIdentityToolsHtml() {
+    const idState = getIdentityState();
+    const cs = idState.clientStatus;
+    const activeModeObj = IDENTITY_MODES.find((m) => m.key === idState.mode) || IDENTITY_MODES[0];
+
+    let clientBadgeHtml = '<span class="badge-tag">⏳ Đang kết nối client nguồn...</span>';
+    if (cs.loading) {
+      clientBadgeHtml = '<span class="badge-tag amber">⏳ Đang lấy client từ nguồn...</span>';
+    } else if (cs.connected) {
+      const cnt = cs.availableClients;
+      if (cnt !== null && cnt > 0) {
+        clientBadgeHtml = `<span class="badge-tag green">🟢 Nguồn sẵn sàng · ${cnt} client game hoạt động</span>`;
+      } else if (cnt === 0) {
+        clientBadgeHtml = '<span class="badge-tag amber">🟡 Đã kết nối nguồn · Hiện có 0 client game</span>';
+      } else {
+        clientBadgeHtml = '<span class="badge-tag green">🟢 Đã kết nối máy chủ client nguồn</span>';
+      }
+    } else if (cs.error) {
+      clientBadgeHtml = `<span class="badge-tag red">🔴 ${esc(cs.error)}</span>`;
+    }
+
+    const modePillsHtml = IDENTITY_MODES.map((m) => `
+      <button type="button" class="btn-frost id-tool-mode-btn ${idState.mode === m.key ? 'is-active' : ''}" data-identity-mode="${m.key}">
+        ${m.label}
+      </button>
+    `).join('');
+
+    const historyHtml = idState.history.length > 0
+      ? `
+        <div class="id-tool-history">
+          <span class="tool-note">Gần đây:</span>
+          ${idState.history.map((h) => `<button type="button" class="id-tool-history-chip" data-identity-history="${esc(h)}">${esc(h)}</button>`).join('')}
+        </div>
+      `
+      : '';
+
+    let resultsHtml = '';
+    const res = idState.lastResult;
+    if (idState.loading) {
+      resultsHtml = `
+        <section class="glass-panel" style="text-align:center;padding:30px 18px;">
+          <div style="font-size:15px;font-weight:600;color:var(--color-pure-white);">⏳ Đang truy vấn client game từ nguồn...</div>
+          <p class="tool-note" style="margin-top:6px;">Đang tìm nhân vật và trích xuất ID Game (Role ID) / Tên nhân vật trực tiếp.</p>
+        </section>
+      `;
+    } else if (idState.error) {
+      resultsHtml = `
+        <section class="glass-panel">
+          <div class="tool-warning" style="background:rgba(228,109,76,0.14);color:#a5364b;">
+            ⚠️ ${esc(idState.error)}
+          </div>
+        </section>
+      `;
+    } else if (res) {
+      const players = Array.isArray(res.players) ? res.players : [];
+      if (players.length === 0) {
+        if (res.notFoundInGame && res.decoded) {
+          resultsHtml = `
+            <section class="glass-panel">
+              <div class="tool-warning" style="margin-bottom:14px;">
+                ⚠️ Định dạng mã hợp lệ nhưng client game không tìm thấy nhân vật đang tồn tại cho mã này (có thể sai ký tự hoặc tài khoản đã xóa).
+              </div>
+              <div class="id-tool-copy-stack">
+                ${renderCopyRowHtml('ID Game (Role ID) đã chuẩn hóa', res.decoded.roleId, 'ID Game (Role ID)', true)}
+                ${renderCopyRowHtml('ID số (SUID) giải mã tương ứng', res.decoded.suid, 'SUID', false)}
+              </div>
+            </section>
+          `;
+        } else {
+          resultsHtml = `
+            <section class="glass-panel" style="text-align:center;padding:28px 18px;">
+              <div style="font-size:15px;font-weight:600;color:var(--color-pure-white);">Không tìm thấy nhân vật phù hợp cho “${esc(res.query)}”</div>
+              <p class="tool-note" style="margin-top:6px;">Hãy kiểm tra lại chính tả tên nhân vật (có dấu / ký tự đặc biệt) hoặc dán đúng mã ID Game dạng <code>XXXX-XXXX-XXXX</code>.</p>
+            </section>
+          `;
+        }
+      } else {
+        const passportHtml = renderSelectedPassportHtml(idState);
+        const listHtml = players.length > 1 || !idState.selectedDetail
+          ? `
+            <section class="glass-panel">
+              <div class="panel-title-row" style="flex-wrap:wrap;gap:8px;">
+                <span class="panel-title-text">📋 Kết quả trích xuất (${players.length} nhân vật)</span>
+                <span class="tool-note">Nhấn nút sao chép nhanh hoặc bấm vào nhân vật để xem hồ sơ chi tiết</span>
+              </div>
+              <div class="id-tool-results-grid">
+                ${players.map((p, idx) => {
+                  const isSel = idState.selectedSuid === p.suid;
+                  const reg = p.regionName || p.region || '';
+                  return `
+                    <article class="id-tool-card ${isSel ? 'is-selected' : ''}" data-identity-open="${idx}">
+                      <div class="id-tool-card-top">
+                        ${renderPlayerAvatarHtml(p)}
+                        <div class="id-tool-card-info">
+                          <div class="id-tool-card-name">${esc(p.nickname || 'Chưa có tên')}</div>
+                          <div class="id-tool-card-sub">
+                            ${reg ? `<span>📍 ${esc(reg)}</span>` : ''}
+                            ${p.isOnline ? '<span style="color:#24705e;font-weight:600;">· Online</span>' : p.onlineStatus ? `<span>· ${esc(p.onlineStatus)}</span>` : ''}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div class="id-tool-card-ids">
+                        <div class="id-tool-mini-row">
+                          <span class="id-tool-mini-lbl">ID Game</span>
+                          <code class="id-tool-mini-val is-accent">${esc(p.roleId || '—')}</code>
+                        </div>
+                        <div class="id-tool-mini-row">
+                          <span class="id-tool-mini-lbl">SUID</span>
+                          <code class="id-tool-mini-val">${esc(p.suid)}</code>
+                        </div>
+                      </div>
+
+                      <div class="id-tool-card-actions">
+                        <button type="button" class="btn-frost id-tool-sm-btn" data-copy-value="${esc(p.nickname)}" data-copy-label="Tên nhân vật">📋 Chép tên</button>
+                        <button type="button" class="btn-violet id-tool-sm-btn" data-copy-value="${esc(p.roleId || '')}" data-copy-label="ID Game (Role ID)">📋 Chép ID Game</button>
+                        <button type="button" class="btn-frost id-tool-sm-btn" data-copy-value="${esc(p.suid)}" data-copy-label="SUID">🔢 SUID</button>
+                        <button type="button" class="btn-frost id-tool-sm-btn" data-identity-detail="${idx}">👤 Hồ sơ</button>
+                      </div>
+                    </article>
+                  `;
+                }).join('')}
+              </div>
+            </section>
+          `
+          : '';
+        resultsHtml = passportHtml + listHtml;
+      }
+    } else {
+      resultsHtml = `
+        <section class="glass-panel id-tool-guide">
+          <div class="id-tool-guide-grid">
+            <div class="stat-subcard">
+              <div style="font-weight:700;color:var(--color-pure-white);margin-bottom:4px;">👤 Tên nhân vật → ID Game</div>
+              <p class="tool-note">Gõ tên nhân vật Play Together (VD: <strong>Kitty</strong>, <strong>Bong</strong>) để lấy danh sách nhân vật từ client nguồn kèm <strong>ID Game (Role ID)</strong> chuẩn xác.</p>
+            </div>
+            <div class="stat-subcard">
+              <div style="font-weight:700;color:var(--color-pure-white);margin-bottom:4px;">🆔 ID Game (Role ID) → Tên nhân vật</div>
+              <p class="tool-note">Dán mã <strong>XXXX-XXXX-XXXX</strong> (VD: <strong>RK8C-CKHL-LMGG</strong>) để giải mã SUID và truy vấn tên nhân vật, khu vực, cấp độ, tim trực tiếp trong game.</p>
+            </div>
+            <div class="stat-subcard">
+              <div style="font-weight:700;color:var(--color-pure-white);margin-bottom:4px;">📋 Sao chép 1 chạm</div>
+              <p class="tool-note">Mỗi kết quả đều hiển thị sẵn nút sao chép nhanh <strong>Tên nhân vật</strong>, <strong>ID Game (Role ID)</strong> và <strong>SUID</strong>.</p>
+            </div>
+          </div>
+        </section>
+      `;
+    }
+
+    return `
+      <section class="glass-panel">
+        <div class="panel-title-row" style="flex-wrap:wrap;gap:10px;">
+          <div>
+            <div class="panel-title-text">🔎 Trích xuất ID Game / Tên nhân vật</div>
+            <div class="tool-note" style="margin-top:3px;">Kết nối trực tiếp client nguồn Play Together để tra cứu hai chiều Tên nhân vật ⇄ ID Game (Role ID) & SUID.</div>
+          </div>
+          <div class="action-row">
+            ${clientBadgeHtml}
+            <button type="button" class="btn-frost" id="btnIdentityRefreshClients" ${cs.loading ? 'disabled' : ''}>↻ Lấy lại client</button>
+          </div>
+        </div>
+
+        <div class="id-tool-mode-bar" role="tablist" aria-label="Chế độ trích xuất">
+          ${modePillsHtml}
+        </div>
+
+        <form id="identityLookupForm" class="id-tool-search-form">
+          <div class="id-tool-input-wrap">
+            <input
+              type="text"
+              id="identityLookupInput"
+              class="input-box"
+              maxlength="80"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="${esc(activeModeObj.placeholder)}"
+              value="${esc(idState.query)}"
+            />
+            ${idState.query ? '<button type="button" class="id-tool-clear-btn" id="btnIdentityClearInput" aria-label="Xóa từ khóa">✕</button>' : ''}
+          </div>
+          <button type="submit" class="btn-violet" id="btnIdentityLookupSubmit" ${idState.loading ? 'disabled' : ''}>
+            ${idState.loading ? '⏳ Đang trích xuất...' : '🔍 Trích xuất'}
+          </button>
+        </form>
+
+        ${historyHtml}
+      </section>
+
+      ${resultsHtml}
+    `;
+  }
+
+  function bindIdentityToolsEvents() {
+    const idState = getIdentityState();
+
+    document.getElementById('btnIdentityRefreshClients')?.addEventListener('click', () => {
+      loadIdentityClientStatus(true);
+    });
+
+    document.querySelectorAll('[data-identity-mode]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        idState.mode = btn.dataset.identityMode || 'auto';
+        renderCurrentView();
+        document.getElementById('identityLookupInput')?.focus();
+      });
+    });
+
+    const inputEl = document.getElementById('identityLookupInput');
+    inputEl?.addEventListener('input', (e) => {
+      idState.query = e.target.value;
+    });
+
+    document.getElementById('btnIdentityClearInput')?.addEventListener('click', () => {
+      idState.query = '';
+      idState.error = '';
+      renderCurrentView();
+      document.getElementById('identityLookupInput')?.focus();
+    });
+
+    document.getElementById('identityLookupForm')?.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const q = document.getElementById('identityLookupInput')?.value ?? idState.query;
+      runIdentityLookup(q, idState.mode);
+    });
+
+    document.querySelectorAll('[data-identity-history]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        runIdentityLookup(btn.dataset.identityHistory || '', 'auto');
+      });
+    });
+
+    document.querySelectorAll('[data-copy-value]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        copyToClipboard(btn.dataset.copyValue || '', btn.dataset.copyLabel || 'nội dung', btn);
+      });
+    });
+
+    const openPlayerByIdx = (idx) => {
+      const list = idState.lastResult?.players || [];
+      const player = list[Number(idx)];
+      if (!player) return;
+      loadIdentityProfileDetail(player);
+      setTimeout(() => {
+        document.getElementById('identityPassportPanel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 30);
+    };
+
+    document.querySelectorAll('[data-identity-detail]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openPlayerByIdx(btn.dataset.identityDetail);
+      });
+    });
+
+    document.querySelectorAll('[data-identity-open]').forEach((card) => {
+      card.addEventListener('click', () => {
+        openPlayerByIdx(card.dataset.identityOpen);
+      });
+    });
+
+    document.getElementById('btnIdentityLoadDetail')?.addEventListener('click', () => {
+      if (idState.selectedDetail) loadIdentityProfileDetail(idState.selectedDetail);
+    });
+
+    document.getElementById('btnIdentityClosePassport')?.addEventListener('click', () => {
+      idState.selectedSuid = null;
+      idState.selectedDetail = null;
+      idState.detailError = '';
+      renderCurrentView();
+    });
+
+    // Safe avatar image fallback without inline onerror attributes
+    document.querySelectorAll('.id-tool-avatar-img').forEach((img) => {
+      img.addEventListener('error', () => {
+        const fb = img.dataset.fallbackSrc;
+        if (fb && img.src !== fb) {
+          img.removeAttribute('data-fallback-src');
+          img.src = fb;
+          return;
+        }
+        img.style.display = 'none';
+        const fallbackEl = img.parentElement?.querySelector('.id-tool-avatar-fallback');
+        if (fallbackEl) fallbackEl.style.display = 'grid';
+      });
+    });
+  }
 
   async function loadAdminMonitorCtvDetail(ctvId, silent = false) {
     if (state.user?.role !== 'admin' || !ctvId) return;
@@ -430,5 +1022,5 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
     }));
   }
 
-  return { renderIdentityToolsHtml, bindIdentityToolsEvents, loadAdminMonitor, renderAdminMonitorHtml, bindAdminMonitorEvents };
+  return { renderIdentityToolsHtml, bindIdentityToolsEvents, loadIdentityClientStatus, loadAdminMonitor, renderAdminMonitorHtml, bindAdminMonitorEvents };
 }

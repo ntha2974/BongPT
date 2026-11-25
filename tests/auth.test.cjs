@@ -38,6 +38,28 @@ async function startTestServer(t, upstreamFetch = async () => ({ ok: true, statu
     readFileSync: (filePath, enc) => filePath.startsWith(publicDir) ? fs.readFileSync(filePath, enc) : (options.corrupt ? '{broken json' : JSON.stringify(data)),
     writeFileSync() { if (writeFailure) throw new Error('Disk full'); }, renameSync() {}, unlinkSync() {},
   };
+  let mockWsHandler = null;
+  class MockWebSocket {
+    constructor(url) {
+      this.url = url;
+      this.readyState = 1;
+      setImmediate(() => {
+        if (this.onopen) this.onopen();
+        if (mockWsHandler) mockWsHandler('open', null, this);
+      });
+    }
+    send(payload) {
+      if (mockWsHandler) mockWsHandler('send', payload, this);
+    }
+    emitMessage(obj) {
+      setImmediate(() => {
+        if (this.onmessage) this.onmessage({ data: JSON.stringify(obj) });
+      });
+    }
+    close() {
+      this.readyState = 3;
+    }
+  }
   const context = vm.createContext({
     express: () => {
       const app = express();
@@ -47,13 +69,15 @@ async function startTestServer(t, upstreamFetch = async () => ({ ok: true, statu
     fs: fakeFs, path, crypto, zlib, esbuild,
     fileURLToPath: () => path.join(root, 'server.js'),
     process: { env: options.env || {}, on() {} }, console: { ...console, error() {} }, structuredClone, URL, URLSearchParams, Buffer, AbortSignal,
+    setTimeout, clearTimeout,
     fetch: upstreamFetch,
+    WebSocket: MockWebSocket,
   });
   context.express.json = express.json;
   context.express.static = express.static;
   await vm.runInContext('(async () => {\n' + serverSource.replace(/^import .*;\r?\n/gm, '')
     .replace('import.meta.url', '"file:///test/server.js"')
-    + '\nglobalThis.testApp = app; globalThis.testDb = db;\n})()', context);
+    + '\nglobalThis.testApp = app; globalThis.testDb = db; globalThis.testEncodeRoleId = encodeSuidToRoleId; globalThis.testDecodeRoleId = decodeRoleIdToSuid;\n})()', context);
   const server = http.createServer(context.testApp);
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
@@ -70,6 +94,9 @@ async function startTestServer(t, upstreamFetch = async () => ({ ok: true, statu
   return { base, request, login, db: context.testDb, setUpstreamFetch: value => { context.fetch = value; },
     setWriteFailure: value => { writeFailure = value; },
     mockSearch: handler => { context.searchInGameByWebSocket = handler; },
+    mockWebSocket: handler => { mockWsHandler = handler; },
+    encodeSuidToRoleId: context.testEncodeRoleId,
+    decodeRoleIdToSuid: context.testDecodeRoleId,
   };
 }
 
@@ -557,14 +584,16 @@ test('CTV cannot enumerate saved source customers, read stock internals, monitor
   assert.equal((await server.request('/api/settlements', 'GET', seller.body.token)).body.orders.length, 0);
 });
 
-test('deferred identity tool has no active input or backend operation', async t => {
+test('identity extraction tool renders active lookup form and protects backend endpoints with auth', async t => {
   const { context } = createClient();
   const rendered = vm.runInContext('renderIdentityToolsHtml()', context);
-  assert.match(rendered, /Chưa mở/);
-  assert.doesNotMatch(rendered, /<form|<input/);
+  assert.match(rendered, /Trích xuất ID Game \/ Tên nhân vật/);
+  assert.match(rendered, /id="identityLookupForm"/);
   const server = await startTestServer(t);
-  const result = await server.request('/api/tools/identity', 'POST', '', { mode: 'name', query: 'unused' });
-  assert.equal(result.status, 404);
+  const unauthLookup = await server.request('/api/tools/identity/lookup', 'POST', '', { mode: 'name', query: 'unused' });
+  assert.equal(unauthLookup.status, 401);
+  const unauthClients = await server.request('/api/tools/game-clients', 'GET');
+  assert.equal(unauthClients.status, 401);
 });
 
 test('Render Free permits CTV credit, positive initial balances and purchases without a persistent disk', async t => {
@@ -1549,4 +1578,144 @@ test('CTV orders refresh burst guard coalesces rapid refresh=1 spam and handles 
   const burst = await server.request('/api/orders?refresh=1', 'GET', seller.body.token);
   assert.equal(burst.status, 200);
   assert.equal(orderHits, hitsAfterFirst);
+});
+
+test('identity extraction tool replaces user_search sidebar, converts Role ID <-> SUID accurately, queries live clients, and escapes HTML', async t => {
+  const html = fs.readFileSync(path.join(root, 'public/index.html'), 'utf8');
+  assert.match(html, /data-view="identity_tools"/);
+  assert.match(html, /Trích xuất ID Game \/ Tên nhân vật/);
+  assert.doesNotMatch(html, /data-view="user_search"/);
+
+  const server = await startTestServer(t, async () => ({
+    ok: true, status: 200, json: async () => ({ token: 'test-upstream-token', user: { id: 161 } }),
+  }), {
+    seed(data) {
+      data.settings.hoanNguyen.user = { id: 161 };
+    },
+  });
+  const { encodeSuidToRoleId, decodeRoleIdToSuid } = server;
+  assert.equal(encodeSuidToRoleId('1070894579678792892'), 'RK8C-CKHL-LMGG');
+  assert.equal(decodeRoleIdToSuid('RK8C-CKHL-LMGG'), '1070894579678792892');
+  assert.equal(decodeRoleIdToSuid('rk8cckhllmgg'), '1070894579678792892');
+  assert.equal(encodeSuidToRoleId('1080183253343967556'), 'ALEY-AAZL-LMYY');
+  assert.equal(decodeRoleIdToSuid('ALEY-AAZL-LMYY'), '1080183253343967556');
+  assert.equal(encodeSuidToRoleId('782945677887790756'), 'NMHG-UA9L-LMGU');
+  assert.equal(decodeRoleIdToSuid('0000-1111-OOOO'), null);
+
+  server.mockWebSocket((event, payload, ws) => {
+    if (event === 'open') {
+      ws.emitMessage({ type: 'available_clients', available_clients: 7 });
+      ws.emitMessage({ type: 'connected', message: 'ok' });
+      return;
+    }
+    if (event === 'send') {
+      const msg = JSON.parse(payload);
+      if (msg.type === 'profile_search') {
+        const profiles = msg.search_nickname === 'Kitty' ? [{
+          suid: '1070894579678792892',
+          Nickname: 'Kitty',
+          Region: 'use1',
+          RegionName: 'Phố Mỹ',
+          AchievementLevel: 21,
+          PhotoUrl: 'https://graph.facebook.com/1/picture',
+          IntroStr: 'Hello <b>world</b>',
+          Online_Status: 'Online lần cuối 2 giờ trước',
+        }] : [];
+        ws.emitMessage({ type: 'profile_search_result', profiles });
+      } else if (msg.type === 'request_profile') {
+        if (String(msg.suid) === '1070894579678792892') {
+          ws.emitMessage({
+            type: 'request_profile_result',
+            profile: {
+              UserSuid: '1070894579678792892',
+              FriendCount: 31,
+              Profile: {
+                Nickname: 'Kitty',
+                Region: 'use1',
+                AchievementLevel: 21,
+                UserLikes: 40811,
+                HomeLikes: 15005,
+                FollowerCount: 391,
+                MyProfileUrlIdx: 88680400,
+                IntroStr: 'Bio <script>alert(1)</script>',
+                ProfileCount: { TodayProfileVisitCount: 11, TotalProfileVisitCount: 54348, TotalHomeVisitCount: 3218 },
+              },
+            },
+          });
+        } else {
+          ws.emitMessage({ type: 'error', request_context: 'request_profile', suid: msg.suid, message: 'Không nhận được hồ sơ' });
+        }
+      }
+    }
+  });
+
+  // Unauthenticated access rejected
+  assert.equal((await server.request('/api/tools/game-clients', 'GET')).status, 401);
+  assert.equal((await server.request('/api/tools/identity/lookup', 'POST', '', { query: 'Kitty' })).status, 401);
+
+  const seller = await server.login('seller', 'seller-test-password');
+  const token = seller.body.token;
+
+  // 1. Live client status via real WS protocol
+  const clientsRes = await server.request('/api/tools/game-clients?refresh=1', 'GET', token);
+  assert.equal(clientsRes.status, 200);
+  assert.equal(clientsRes.body.connected, true);
+  assert.equal(clientsRes.body.availableClients, 7);
+
+  // 2. Name -> Role ID extraction
+  const byName = await server.request('/api/tools/identity/lookup', 'POST', token, { query: 'Kitty', mode: 'auto' });
+  assert.equal(byName.status, 200);
+  assert.equal(byName.body.resolvedBy, 'name');
+  assert.equal(byName.body.players.length, 1);
+  assert.equal(byName.body.players[0].nickname, 'Kitty');
+  assert.equal(byName.body.players[0].roleId, 'RK8C-CKHL-LMGG');
+  assert.equal(byName.body.players[0].suid, '1070894579678792892');
+
+  // 3. Role ID -> Name & live stats extraction (reverse direction)
+  const byRole = await server.request('/api/tools/identity/lookup', 'POST', token, { query: 'rk8c-ckhl-lmgg', mode: 'auto' });
+  assert.equal(byRole.status, 200);
+  assert.equal(byRole.body.resolvedBy, 'role_id');
+  assert.equal(byRole.body.players.length, 1);
+  assert.equal(byRole.body.players[0].nickname, 'Kitty');
+  assert.equal(byRole.body.players[0].roleId, 'RK8C-CKHL-LMGG');
+  assert.equal(byRole.body.players[0].stats.userLikes, 40811);
+  assert.equal(byRole.body.players[0].stats.friendCount, 31);
+  assert.equal(byRole.body.players[0].regionName, 'Phố Mỹ');
+
+  // 4. SUID -> Name & Role ID extraction
+  const bySuid = await server.request('/api/tools/identity/lookup', 'POST', token, { query: '1070894579678792892', mode: 'suid' });
+  assert.equal(bySuid.status, 200);
+  assert.equal(bySuid.body.resolvedBy, 'suid');
+  assert.equal(bySuid.body.players[0].roleId, 'RK8C-CKHL-LMGG');
+  assert.equal(bySuid.body.players[0].nickname, 'Kitty');
+
+  // 5. Valid-format Role ID not present in game still returns decoded pair cleanly
+  const missingRole = await server.request('/api/tools/identity/lookup', 'POST', token, { query: 'ALEY-AAZL-LMYY', mode: 'role_id' });
+  assert.equal(missingRole.status, 200);
+  assert.equal(missingRole.body.notFoundInGame, true);
+  assert.equal(missingRole.body.decoded.suid, '1080183253343967556');
+  assert.equal(missingRole.body.decoded.roleId, 'ALEY-AAZL-LMYY');
+
+  // 6. Client rendering escapes injected HTML & renders copy controls for name + Role ID + SUID
+  const { context, state } = createClient();
+  state.identityTool = {
+    mode: 'auto',
+    query: 'Kitty',
+    loading: false,
+    error: '',
+    clientStatus: { loading: false, connected: true, availableClients: 7, checkedAt: new Date().toISOString(), error: '' },
+    lastResult: { query: 'Kitty', mode: 'auto', resolvedBy: 'role_id', players: [byRole.body.players[0]] },
+    selectedSuid: '1070894579678792892',
+    selectedDetail: { ...byRole.body.players[0], nickname: '<img src=x onerror=alert(1)>' },
+    detailLoadingSuid: null,
+    detailError: '',
+    history: ['Kitty'],
+  };
+  const rendered = vm.runInContext('renderIdentityToolsHtml()', context);
+  assert.doesNotMatch(rendered, /<script>alert|<img src=x onerror/);
+  assert.match(rendered, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.match(rendered, /RK8C-CKHL-LMGG/);
+  assert.match(rendered, /1070894579678792892/);
+  assert.match(rendered, /data-copy-value="RK8C-CKHL-LMGG"/);
+  assert.match(rendered, /7 client game hoạt động/);
 });

@@ -15,41 +15,42 @@
        LOGIN GATE SCREEN (SHOWN WHEN NOT LOGGED IN)
        ======================================================================== -->
   <div class="auth-gate-screen" id="authGateScreen" style="display:flex;">
-    <div class="login-frame"><div class="login-art" aria-hidden="true"></div>
-    <form class="auth-gate-card" id="gateLoginForm">
-      <div style="display:flex;align-items:center;gap:14px;">
-        <img src="/kitty-shop.jpg" alt="ebongiu Logo" class="brand-logo-img brand-logo-lg" />
-        <div>
-          <div class="brand-title" style="font-size:23px;">ebongiu</div>
-          <div style="font-size:12px;color:var(--color-fog-veil);">Hệ thống quản lý & chạy đơn Play Together</div>
+    <div class="login-frame">
+      <div class="login-art" aria-hidden="true"></div>
+      <form class="auth-gate-card" id="gateLoginForm">
+        <div style="display:flex;align-items:center;gap:14px;">
+          <img src="/kitty-shop.jpg" alt="ebongiu Logo" class="brand-logo-img brand-logo-lg" />
+          <div>
+            <div class="brand-title" style="font-size:23px;">ebongiu</div>
+            <div style="font-size:12px;color:var(--color-fog-veil);">Hệ thống quản lý & chạy đơn Play Together</div>
+          </div>
         </div>
-      </div>
 
-      <div style="height:1px;background:var(--color-glass-edge);"></div>
+        <div style="height:1px;background:var(--color-glass-edge);"></div>
 
-      <div>
-        <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;" for="gateLoginId">
-          Email hoặc Tên đăng nhập
-        </label>
-        <input type="text" id="gateLoginId" class="input-box" placeholder="Nhập username hoặc email..."
-          autocomplete="username" />
-      </div>
+        <div>
+          <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;" for="gateLoginId">
+            Email hoặc Tên đăng nhập
+          </label>
+          <input type="text" id="gateLoginId" class="input-box" placeholder="Nhập username hoặc email..."
+            autocomplete="username" />
+        </div>
 
-      <div>
-        <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;" for="gateLoginPw">
-          Mật khẩu
-        </label>
-        <input type="password" id="gateLoginPw" class="input-box" placeholder="••••••••"
-          autocomplete="current-password" />
-      </div>
+        <div>
+          <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;" for="gateLoginPw">
+            Mật khẩu
+          </label>
+          <input type="password" id="gateLoginPw" class="input-box" placeholder="••••••••"
+            autocomplete="current-password" />
+        </div>
 
-      <div id="gateLoginError" style="color:var(--color-ember-glow);font-size:12px;display:none;"></div>
+        <div id="gateLoginError" style="color:var(--color-ember-glow);font-size:12px;display:none;"></div>
 
-      <button type="submit" class="btn-violet" id="btnGateSubmitLogin" style="width:100%;padding:11px;">
-        Đăng nhập hệ thống →
-      </button>
+        <button type="submit" class="btn-violet" id="btnGateSubmitLogin" style="width:100%;padding:11px;">
+          Đăng nhập hệ thống →
+        </button>
 
-    </form>
+      </form>
     </div>
   </div>
 
@@ -157,17 +158,10 @@
         <!-- CÔNG CỤ -->
         <div class="sidebar-section-label">CÔNG CỤ</div>
 
-        <button type="button" class="sidebar-item" data-view="user_search">
-          <span class="sidebar-item-left">
-            <span class="sidebar-icon">👤</span>
-            <span>1. Tìm khách hàng (đặt đơn)</span>
-          </span>
-        </button>
-
         <button type="button" class="sidebar-item" data-view="identity_tools">
           <span class="sidebar-item-left">
             <span class="sidebar-icon">🔎</span>
-            <span>2. Trích xuất tên / ID Game</span>
+            <span>Trích xuất ID Game / Tên nhân vật</span>
           </span>
         </button>
 
@@ -175,7 +169,8 @@
         <div id="sidebarAdminSection" style="display:none;flex-direction:column;gap:4px;">
           <div class="sidebar-section-label" style="color:#9b3765;">QUẢN TRỊ EBONGIU</div>
           <button type="button" class="sidebar-item" data-view="admin_monitor">
-            <span class="sidebar-item-left"><span class="sidebar-icon">🛡️</span><span>Giám sát & đối soát CTV</span></span>
+            <span class="sidebar-item-left"><span class="sidebar-icon">🛡️</span><span>Giám sát & đối soát
+                CTV</span></span>
           </button>
 
           <button type="button" class="sidebar-item" data-view="admin_pricing">
@@ -207,7 +202,8 @@
       <!-- Top Navbar -->
       <header class="top-navbar">
         <div class="navbar-heading">
-          <button type="button" class="mobile-menu-btn" id="btnToggleMobileSidebar" aria-label="Menu điều hướng" aria-controls="appSidebar" aria-expanded="false">☰</button>
+          <button type="button" class="mobile-menu-btn" id="btnToggleMobileSidebar" aria-label="Menu điều hướng"
+            aria-controls="appSidebar" aria-expanded="false">☰</button>
           <div style="font-weight:600;color:var(--color-pure-white);font-size:15px;" id="topNavbarViewTitle">
             Đơn Trái cây & Xu nông trại
           </div>
@@ -242,7 +238,8 @@
   <div class="modal-overlay" id="appModalOverlay" style="display:none;">
     <div class="modal-box" id="appModalBox" role="dialog" aria-modal="true" aria-labelledby="appModalTitle">
       <div class="modal-heading">
-        <h3 style="font-family:var(--font-display);font-size:18px;font-weight:600;color:var(--color-pure-white);" id="appModalTitle">
+        <h3 style="font-family:var(--font-display);font-size:18px;font-weight:600;color:var(--color-pure-white);"
+          id="appModalTitle">
           Thêm đơn hàng
         </h3>
         <button type="button" class="btn-frost" id="btnCloseAppModal" style="padding:5px 10px;font-size:12px;">

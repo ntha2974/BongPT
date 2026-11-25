@@ -74,7 +74,7 @@ const state = {
 };
 localStorage.removeItem('ebongiu_token');
 
-const { renderIdentityToolsHtml, bindIdentityToolsEvents, loadAdminMonitor, renderAdminMonitorHtml, bindAdminMonitorEvents } =
+const { renderIdentityToolsHtml, bindIdentityToolsEvents, loadIdentityClientStatus, loadAdminMonitor, renderAdminMonitorHtml, bindAdminMonitorEvents } =
   createToolViews({ state, apiFetch, createRequestKey, escapeHtml, showToast, formatVnd, formatDateVi, renderCurrentView, loadOrders });
 
 function createRequestKey() {
@@ -92,8 +92,7 @@ const VIEW_TITLES = {
   fruit_coin: 'Đơn Trái cây & Xu nông trại',
   weekly_settlements: 'Đối soát tuần & Lịch sử số dư',
   order_history: 'Lịch sử đơn hàng',
-  user_search: 'Công cụ: Tìm khách hàng để đặt đơn',
-  identity_tools: 'Công cụ: Trích xuất tên nhân vật / Role ID',
+  identity_tools: 'Trích xuất ID Game / Tên nhân vật',
   admin_monitor: 'Quản trị: Giám sát hoạt động & đối soát CTV',
   admin_pricing: 'Quản trị: Tùy chỉnh Giá từng Sản phẩm & Danh mục',
   admin_ctv: 'Quản trị: Quản lý Tài khoản CTV đặt đơn',
@@ -685,6 +684,7 @@ function switchView(viewKey) {
     return;
   }
   renderCurrentView();
+  if (viewKey === 'identity_tools') loadIdentityClientStatus();
   if (viewKey === 'admin_monitor') loadAdminMonitor();
 }
 
@@ -726,9 +726,6 @@ function renderCurrentView() {
   } else if (view === 'order_history') {
     container.innerHTML = zeroBannerHtml + renderOrderHistoryHtml();
     bindOrderHistoryEvents();
-  } else if (view === 'user_search') {
-    container.innerHTML = zeroBannerHtml + renderUserSearchPageHtml();
-    bindUserSearchPageEvents();
   } else if (view === 'identity_tools') {
     container.innerHTML = zeroBannerHtml + renderIdentityToolsHtml();
     bindIdentityToolsEvents();
@@ -3080,93 +3077,6 @@ function bindOrderHistoryEvents() {
     }, 80);
   });
   bindOrderRowActionButtons();
-}
-
-function renderUserSearchPageHtml() {
-  return `
-    <div class="glass-panel">
-      <div class="panel-title-row">
-        <span class="panel-title-text">1. Tìm khách hàng để đặt đơn</span>
-      </div>
-      <div class="customer-search-fields">
-        <select id="pageUserSearchMode" class="input-box"><option value="name">Tên nhân vật</option><option value="id">Role ID</option></select>
-        <input type="text" id="pageUserSearchInput" class="input-box" placeholder="Nhập tên nhân vật trong game (VD: Kitty, Yvelzz)..." />
-        <button type="button" class="btn-violet" id="btnPageUserSearch">🔍 Tìm trong Game</button>
-      </div>
-      <div id="pageUserSearchStatus" style="margin-top:12px;font-size:13px;color:var(--color-fog-veil);"></div>
-      <div id="pageUserSearchResults" style="margin-top:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr));gap:12px;"></div>
-    </div>
-  `;
-}
-
-function bindUserSearchPageEvents() {
-  const runSearch = async () => {
-    const q = document.getElementById('pageUserSearchInput')?.value?.trim();
-    const status = document.getElementById('pageUserSearchStatus');
-    const results = document.getElementById('pageUserSearchResults');
-    if (!q) {
-      showToast('Vui lòng nhập tên nhân vật cần tìm.');
-      return;
-    }
-    status.textContent = '⏳ Đang kết nối máy chủ Play Together để tìm nhân vật...';
-    results.innerHTML = '';
-    try {
-      if (document.getElementById('pageUserSearchMode')?.value === 'id') {
-        const response = await apiFetch('/api/customer/resolve-role-id', 'POST', { role_id: q });
-        if (response.customer) {
-          state.modalOrder.customer = response.customer;
-          openCreateOrderModal('fruit_coin');
-          status.textContent = 'Đã chọn nhân vật theo Role ID.';
-        }
-        return;
-      }
-      const r = await apiFetch('/api/customer/search-ingame', 'POST', { nickname: q });
-      const list = r.profiles || [];
-      status.textContent = `Tìm thấy ${list.length} nhân vật:`;
-      results.innerHTML = list
-        .map(
-          (p, idx) => `
-          <div class="stat-subcard">
-            <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
-              <div>
-                <div style="font-weight:700;color:var(--color-pure-white);font-size:15px;">${escapeHtml(p.Nickname)}</div>
-                <div style="font-size:12px;color:var(--color-moon-mist);">Khu vực: ${escapeHtml(p.RegionName || p.Region || 'VN')} · Lv.${p.AchievementLevel ?? 1}</div>
-                <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(p.suid)} · ${escapeHtml(p.Online_Status || '')}</div>
-              </div>
-              <button type="button" class="btn-violet" data-page-pick-prof="${idx}">Đặt đơn →</button>
-            </div>
-          </div>
-        `
-        )
-        .join('');
-
-      results.querySelectorAll('[data-page-pick-prof]').forEach((btn) => {
-        btn.addEventListener('click', async () => {
-          const prof = list[Number(btn.dataset.pagePickProf)];
-          btn.disabled = true;
-          btn.textContent = 'Đang lưu...';
-          try {
-            const sel = await apiFetch('/api/customer/select-ingame', 'POST', { profile: prof });
-            if (sel.success && sel.customer) {
-              state.modalOrder.customer = sel.customer;
-              openCreateOrderModal('fruit_coin');
-            }
-          } catch (err) {
-            showToast(err.message);
-            btn.disabled = false;
-            btn.textContent = 'Đặt đơn →';
-          }
-        });
-      });
-    } catch (err) {
-      status.textContent = `Lỗi: ${err.message}`;
-    }
-  };
-
-  document.getElementById('btnPageUserSearch')?.addEventListener('click', runSearch);
-  document.getElementById('pageUserSearchInput')?.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') runSearch();
-  });
 }
 
 // ============================================================================

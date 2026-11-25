@@ -1193,6 +1193,245 @@ const activeWsByUser = new Map();
 const MAX_WS_GLOBAL = 10;
 const MAX_WS_PER_USER = 2;
 
+const ROLE_ID_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+const MAX_PLAY_TOGETHER_SUID = 1n << 60n;
+const ROLE_ID_RE = /^([0-9A-Z]{4})(?:\s*-\s*|\s+)?([0-9A-Z]{4})(?:\s*-\s*|\s+)?([0-9A-Z]{4})$/;
+const ROLE_ID_DELIMITED_RE = /^[2-9A-HJ-NP-Z]{4}(?:\s*-\s*|\s+)[2-9A-HJ-NP-Z]{4}(?:\s*-\s*|\s+)[2-9A-HJ-NP-Z]{4}$/i;
+const ROLE_ID_COMPACT_RE = /^[2-9A-HJ-NP-Z]{12}$/i;
+const SUID_STRICT_RE = /^\d{15,20}$/;
+
+const PLAY_TOGETHER_REGIONS = {
+  vn1: 'Phố Việt',
+  vn2: 'Phố Việt 2',
+  use1: 'Phố Mỹ',
+  use2: 'Phố Mỹ',
+  usw1: 'Phố Mỹ (Tây)',
+  usw2: 'Phố Mỹ (Tây)',
+  as1: 'Phố Á',
+  as2: 'Phố Á 2',
+  apse1: 'Phố Á',
+  apse2: 'Phố Úc / Á',
+  apne1: 'Phố Nhật',
+  apne2: 'Phố Hàn',
+  apne3: 'Phố Nhật',
+  kr1: 'Phố Hàn',
+  jp1: 'Phố Nhật',
+  tw1: 'Phố Đài',
+  eu1: 'Phố Âu',
+  euc1: 'Phố Âu',
+  euw1: 'Phố Âu',
+  sa1: 'Phố Nam Mỹ',
+  sae1: 'Phố Nam Mỹ',
+  sea1: 'Đông Nam Á',
+};
+
+function encodeSuidToRoleId(suid) {
+  let value;
+  if (typeof suid === 'bigint') {
+    value = suid;
+  } else {
+    const raw = String(suid ?? '').trim();
+    if (!/^\d{1,20}$/.test(raw)) return null;
+    value = BigInt(raw);
+  }
+  if (value <= 0n || value >= MAX_PLAY_TOGETHER_SUID) return null;
+  let packed = 0n;
+  for (let i = 0n; i < 7n; i += 1n) {
+    packed = (packed << 8n) | ((value >> (8n * i)) & 255n);
+  }
+  packed = (packed << 4n) | (value >> 56n);
+  let out = '';
+  for (let i = 11n; i >= 0n; i -= 1n) {
+    out += ROLE_ID_ALPHABET[Number((packed >> (5n * i)) & 31n)];
+  }
+  return `${out.slice(0, 4)}-${out.slice(4, 8)}-${out.slice(8)}`;
+}
+
+function decodeRoleIdToSuid(roleId) {
+  if (typeof roleId !== 'string' || roleId.length > 64) return null;
+  const match = ROLE_ID_RE.exec(roleId.trim().toUpperCase());
+  if (!match) return null;
+  let packed = 0n;
+  for (const ch of match.slice(1).join('')) {
+    const idx = ROLE_ID_ALPHABET.indexOf(ch);
+    if (idx < 0) return null;
+    packed = (packed << 5n) | BigInt(idx);
+  }
+  let suid = 15n & packed;
+  let rest = packed >> 4n;
+  for (let i = 0; i < 7; i += 1) {
+    suid = (suid << 8n) | (255n & rest);
+    rest >>= 8n;
+  }
+  return suid > 0n ? suid.toString() : null;
+}
+
+function resolveRegionName(region, regionName) {
+  const cleanName = String(regionName || '').trim();
+  if (cleanName) return cleanName;
+  const code = String(region || '').trim().toLowerCase();
+  if (!code) return '';
+  return PLAY_TOGETHER_REGIONS[code] || String(region || '').trim();
+}
+
+function sanitizeImageUrl(url) {
+  const raw = String(url || '').trim();
+  if (/^https:\/\//i.test(raw)) return raw;
+  if (/^http:\/\//i.test(raw)) return `https://${raw.slice(7)}`;
+  return null;
+}
+
+function buildPlayerPortraitUrl(suid, myPhotoIdx) {
+  const s = String(suid || '').trim();
+  const idx = Number(myPhotoIdx || 0);
+  if (!/^\d{1,20}$/.test(s) || !Number.isSafeInteger(idx) || idx <= 0) return null;
+  return `https://dodw0h24oirpq.cloudfront.net/ProfilePageMyProfilePhoto/slot0/${s}/${idx}`;
+}
+
+function normalizeIdentityPlayerFromSearch(p) {
+  const suid = String(p?.suid || '').trim();
+  const roleId = encodeSuidToRoleId(suid);
+  const region = String(p?.Region || p?.region || '').trim();
+  const myPhotoIdx = Number(p?.MyProfileUrlIdx || 0) || 0;
+  return {
+    suid,
+    roleId,
+    nickname: String(p?.Nickname || p?.nickname || '').slice(0, 100),
+    region,
+    regionName: resolveRegionName(region, p?.RegionName),
+    achievementLevel: Math.max(0, Number(p?.AchievementLevel) || 0),
+    photoUrl: sanitizeImageUrl(p?.PhotoUrl),
+    portraitUrl: buildPlayerPortraitUrl(suid, myPhotoIdx),
+    myPhotoIdx,
+    photoId: Number(p?.PhotoID) || 0,
+    introStr: String(p?.IntroStr || '').slice(0, 300),
+    onlineStatus: String(p?.Online_Status || '').slice(0, 120),
+    isOnline: Boolean(p?.Is_Online),
+    lastLogin: String(p?.LastLogin || '').slice(0, 80),
+    detailLoaded: false,
+    stats: null,
+  };
+}
+
+function normalizeIdentityPlayerFromDetail(detail, fallbackSuid = '') {
+  const prof = detail?.Profile || detail || {};
+  const suid = String(detail?.UserSuid || prof?.suid || fallbackSuid || '').trim();
+  const roleId = encodeSuidToRoleId(suid);
+  const region = String(prof?.Region || prof?.region || '').trim();
+  const myPhotoIdx = Number(prof?.MyProfileUrlIdx || 0) || 0;
+  const counts = prof?.ProfileCount || {};
+  return {
+    suid,
+    roleId,
+    nickname: String(prof?.Nickname || prof?.nickname || '').slice(0, 100),
+    region,
+    regionName: resolveRegionName(region, prof?.RegionName),
+    achievementLevel: Math.max(0, Number(prof?.AchievementLevel) || 0),
+    photoUrl: sanitizeImageUrl(prof?.PhotoUrl),
+    portraitUrl: buildPlayerPortraitUrl(suid, myPhotoIdx),
+    myPhotoIdx,
+    photoId: Number(prof?.PhotoID) || 0,
+    introStr: String(prof?.IntroStr || '').slice(0, 300),
+    onlineStatus: String(prof?.Online_Status || '').slice(0, 120),
+    isOnline: Boolean(prof?.Is_Online),
+    lastLogin: String(prof?.LastLogin || '').slice(0, 80),
+    detailLoaded: true,
+    stats: {
+      userLikes: Math.max(0, Number(prof?.UserLikes) || 0),
+      homeLikes: Math.max(0, Number(prof?.HomeLikes) || 0),
+      followerCount: Math.max(0, Number(prof?.FollowerCount) || 0),
+      friendCount: detail?.FriendCount != null ? Math.max(0, Number(detail.FriendCount) || 0) : null,
+      todayProfileVisitCount: Math.max(0, Number(counts?.TodayProfileVisitCount) || 0),
+      totalProfileVisitCount: Math.max(0, Number(counts?.TotalProfileVisitCount) || 0),
+      totalHomeVisitCount: Math.max(0, Number(counts?.TotalHomeVisitCount) || 0),
+    },
+  };
+}
+
+let lastWsClientStatus = {
+  connected: false,
+  availableClients: null,
+  checkedAt: 0,
+};
+
+function recordWsClientCount(count) {
+  if (count === undefined || count === null) return;
+  const n = Number(count);
+  if (!Number.isFinite(n) || n < 0) return;
+  lastWsClientStatus = {
+    connected: true,
+    availableClients: Math.floor(n),
+    checkedAt: Date.now(),
+  };
+}
+
+function checkGameClientsByWebSocket(timeoutMs = 4000) {
+  return new Promise((resolve, reject) => {
+    const wsUrl = 'wss://hoannguyenplaytogether.com/api/ws/connect?platform=web&view=seller-fruit-coin-orders';
+    const ws = new WebSocket(wsUrl);
+    let settled = false;
+    let sawConnected = false;
+    let clientCount = null;
+
+    const finish = (ok, errMsg) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { ws.close(); } catch {}
+      if (ok) {
+        if (clientCount !== null) recordWsClientCount(clientCount);
+        else {
+          lastWsClientStatus = {
+            connected: true,
+            availableClients: lastWsClientStatus.availableClients,
+            checkedAt: Date.now(),
+          };
+        }
+        resolve({
+          connected: true,
+          availableClients: clientCount,
+          checkedAt: new Date().toISOString(),
+        });
+      } else {
+        reject(new Error(errMsg || 'Không thể kết nối máy chủ client game từ nguồn.'));
+      }
+    };
+
+    const timer = setTimeout(() => {
+      if (sawConnected || clientCount !== null) finish(true);
+      else finish(false, 'Kết nối kiểm tra client nguồn quá thời gian chờ.');
+    }, timeoutMs);
+
+    ws.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data);
+        if (msg.available_clients !== undefined) {
+          clientCount = Math.max(0, Number(msg.available_clients) || 0);
+          recordWsClientCount(clientCount);
+          if (sawConnected) finish(true);
+        } else if (msg.type === 'connected') {
+          sawConnected = true;
+          if (clientCount !== null) finish(true);
+          else {
+            // Wait briefly for available_clients right after connected
+            setTimeout(() => { if (!settled) finish(true); }, 450);
+          }
+        } else if (msg.type === 'error') {
+          finish(false, msg.message || 'Nguồn báo lỗi khi lấy trạng thái client.');
+        }
+      } catch {}
+    };
+
+    ws.onerror = () => finish(false, 'Không thể kết nối máy chủ client game từ nguồn.');
+    ws.onclose = () => {
+      if (!settled) {
+        if (sawConnected || clientCount !== null) finish(true);
+        else finish(false, 'Kết nối máy chủ client nguồn bị gián đoạn.');
+      }
+    };
+  });
+}
+
 async function withWsSlot(userId, fn) {
   const uid = String(userId || 'anon');
   const cur = activeWsByUser.get(uid) || 0;
@@ -1242,6 +1481,7 @@ function searchInGameByWebSocket(nickname, timeoutMs = 6000) {
     ws.onmessage = (ev) => {
       try {
         const msg = JSON.parse(ev.data);
+        if (msg.available_clients !== undefined) recordWsClientCount(msg.available_clients);
         if (msg.type === 'profile_search_result') {
           if (!settled) {
             settled = true;
@@ -1303,6 +1543,7 @@ function requestProfileDetailByWebSocket(suid, timeoutMs = 3500) {
     ws.onmessage = (ev) => {
       try {
         const msg = JSON.parse(ev.data);
+        if (msg.available_clients !== undefined) recordWsClientCount(msg.available_clients);
         if (msg.type === 'request_profile_result' && msg.profile) {
           if (!settled) {
             settled = true;
@@ -1310,7 +1551,7 @@ function requestProfileDetailByWebSocket(suid, timeoutMs = 3500) {
             try { ws.close(); } catch {}
             resolve(msg.profile);
           }
-        } else if (msg.type === 'error' && msg.request_context === 'request_profile') {
+        } else if (msg.type === 'error' && (!msg.request_context || msg.request_context === 'request_profile')) {
           if (!settled) {
             settled = true;
             clearTimeout(timer);
@@ -2449,6 +2690,288 @@ app.get('/api/customer/saved/:id', requireAuth, requireAdmin, async (req, res) =
     res.status(400).json({
       success: false,
       message: publicError(req, err, 'Lỗi khi lấy chi tiết khách hàng.'),
+    });
+  }
+});
+
+// ============================================================================
+// IDENTITY EXTRACTION TOOL: LIVE GAME CLIENTS, NAME <-> ROLE ID / SUID
+// ============================================================================
+app.get('/api/tools/game-clients', requireAuth, async (req, res) => {
+  try {
+    const force = req.query.refresh === '1' || req.query.refresh === 'true';
+    const age = Date.now() - (lastWsClientStatus.checkedAt || 0);
+    if (!force && lastWsClientStatus.connected && lastWsClientStatus.availableClients !== null && age < 8000) {
+      return res.json({
+        success: true,
+        connected: true,
+        availableClients: lastWsClientStatus.availableClients,
+        checkedAt: new Date(lastWsClientStatus.checkedAt).toISOString(),
+        cached: true,
+      });
+    }
+    const status = await withWsSlot(req.user.id, () => checkGameClientsByWebSocket(4000));
+    res.json({
+      success: true,
+      connected: Boolean(status.connected),
+      availableClients: status.availableClients,
+      checkedAt: status.checkedAt,
+      cached: false,
+    });
+  } catch (err) {
+    res.status(err?.status === 429 ? 429 : 502).json({
+      success: false,
+      connected: false,
+      availableClients: null,
+      message: publicError(req, err, 'Không thể lấy trạng thái client game từ nguồn.'),
+    });
+  }
+});
+
+app.post('/api/tools/identity/lookup', requireAuth, limitInteractive, async (req, res) => {
+  try {
+    const rawQuery = typeof req.body?.query === 'string' ? req.body.query.trim() : '';
+    const requestedMode = ['auto', 'name', 'role_id', 'suid'].includes(req.body?.mode) ? req.body.mode : 'auto';
+    if (!rawQuery || rawQuery.length > 80) {
+      return res.status(400).json({ success: false, message: 'Vui lòng nhập Tên nhân vật, ID Game (Role ID) hoặc SUID cần trích xuất.' });
+    }
+
+    const resolveBySuid = async (suid, canonicalRoleId, resolvedBy) => {
+      try {
+        const detail = await withWsSlot(req.user.id, () => requestProfileDetailByWebSocket(suid, 6000));
+        const player = normalizeIdentityPlayerFromDetail(detail, suid);
+        if (!player.suid) {
+          return {
+            found: false,
+            decoded: { suid, roleId: canonicalRoleId || encodeSuidToRoleId(suid) },
+            players: [],
+          };
+        }
+        return {
+          found: true,
+          resolvedBy,
+          decoded: { suid: player.suid, roleId: player.roleId },
+          players: [player],
+        };
+      } catch (err) {
+        const msg = String(err?.message || '');
+        if (/không nhận được hồ sơ|not found|không tìm thấy/i.test(msg)) {
+          return {
+            found: false,
+            decoded: { suid, roleId: canonicalRoleId || encodeSuidToRoleId(suid) },
+            players: [],
+            notFoundMessage: msg,
+          };
+        }
+        throw err;
+      }
+    };
+
+    const searchByName = async (nickname) => {
+      const profiles = (await withWsSlot(req.user.id, () => searchInGameByWebSocket(nickname, 7000))).slice(0, 100);
+      const players = profiles
+        .map(normalizeIdentityPlayerFromSearch)
+        .filter((p) => p.suid);
+      return {
+        resolvedBy: 'name',
+        players,
+      };
+    };
+
+    let result;
+    if (requestedMode === 'role_id') {
+      const decodedSuid = decodeRoleIdToSuid(rawQuery);
+      if (!decodedSuid) {
+        return res.status(400).json({
+          success: false,
+          message: 'ID Game (Role ID) chưa đúng định dạng 12 ký tự (VD: RK8C-CKHL-LMGG). Lưu ý không chứa 0, 1, I, O.',
+        });
+      }
+      const canonicalRoleId = encodeSuidToRoleId(decodedSuid);
+      result = await resolveBySuid(decodedSuid, canonicalRoleId, 'role_id');
+      req.auditDetails = { query: canonicalRoleId, mode: 'role_id', resultCount: result.players.length };
+      return res.json({
+        success: true,
+        query: rawQuery,
+        mode: 'role_id',
+        resolvedBy: 'role_id',
+        decoded: result.decoded,
+        notFoundInGame: !result.found,
+        availableClients: lastWsClientStatus.availableClients,
+        players: result.players,
+      });
+    }
+
+    if (requestedMode === 'suid') {
+      if (!/^\d{1,20}$/.test(rawQuery)) {
+        return res.status(400).json({ success: false, message: 'ID số (SUID) phải là chuỗi chữ số hợp lệ (VD: 1070894579678792892).' });
+      }
+      const canonicalRoleId = encodeSuidToRoleId(rawQuery);
+      if (!canonicalRoleId) {
+        return res.status(400).json({ success: false, message: 'ID số (SUID) nằm ngoài phạm vi hợp lệ của Play Together.' });
+      }
+      result = await resolveBySuid(rawQuery, canonicalRoleId, 'suid');
+      req.auditDetails = { query: rawQuery, mode: 'suid', resultCount: result.players.length };
+      return res.json({
+        success: true,
+        query: rawQuery,
+        mode: 'suid',
+        resolvedBy: 'suid',
+        decoded: result.decoded,
+        notFoundInGame: !result.found,
+        availableClients: lastWsClientStatus.availableClients,
+        players: result.players,
+      });
+    }
+
+    if (requestedMode === 'name') {
+      result = await searchByName(rawQuery);
+      req.auditDetails = { nickname: rawQuery, mode: 'name', resultCount: result.players.length };
+      return res.json({
+        success: true,
+        query: rawQuery,
+        mode: 'name',
+        resolvedBy: 'name',
+        availableClients: lastWsClientStatus.availableClients,
+        players: result.players,
+      });
+    }
+
+    // AUTO MODE: detect Role ID (delimited or compact), SUID (15-20 digits), or Character Name
+    if (ROLE_ID_DELIMITED_RE.test(rawQuery)) {
+      const decodedSuid = decodeRoleIdToSuid(rawQuery);
+      if (decodedSuid) {
+        const canonicalRoleId = encodeSuidToRoleId(decodedSuid);
+        result = await resolveBySuid(decodedSuid, canonicalRoleId, 'role_id');
+        req.auditDetails = { query: canonicalRoleId, mode: 'role_id', resultCount: result.players.length };
+        return res.json({
+          success: true,
+          query: rawQuery,
+          mode: 'auto',
+          resolvedBy: 'role_id',
+          decoded: result.decoded,
+          notFoundInGame: !result.found,
+          availableClients: lastWsClientStatus.availableClients,
+          players: result.players,
+        });
+      }
+    }
+
+    if (SUID_STRICT_RE.test(rawQuery)) {
+      const canonicalRoleId = encodeSuidToRoleId(rawQuery);
+      if (canonicalRoleId) {
+        result = await resolveBySuid(rawQuery, canonicalRoleId, 'suid');
+        if (result.found) {
+          req.auditDetails = { query: rawQuery, mode: 'suid', resultCount: result.players.length };
+          return res.json({
+            success: true,
+            query: rawQuery,
+            mode: 'auto',
+            resolvedBy: 'suid',
+            decoded: result.decoded,
+            notFoundInGame: false,
+            availableClients: lastWsClientStatus.availableClients,
+            players: result.players,
+          });
+        }
+        // Fallback: maybe a player literally has a 15+ digit numeric nickname
+        const byName = await searchByName(rawQuery);
+        if (byName.players.length > 0) {
+          req.auditDetails = { nickname: rawQuery, mode: 'name', resultCount: byName.players.length };
+          return res.json({
+            success: true,
+            query: rawQuery,
+            mode: 'auto',
+            resolvedBy: 'name',
+            availableClients: lastWsClientStatus.availableClients,
+            players: byName.players,
+          });
+        }
+        req.auditDetails = { query: rawQuery, mode: 'suid', resultCount: 0 };
+        return res.json({
+          success: true,
+          query: rawQuery,
+          mode: 'auto',
+          resolvedBy: 'suid',
+          decoded: result.decoded,
+          notFoundInGame: true,
+          availableClients: lastWsClientStatus.availableClients,
+          players: [],
+        });
+      }
+    }
+
+    if (ROLE_ID_COMPACT_RE.test(rawQuery)) {
+      const decodedSuid = decodeRoleIdToSuid(rawQuery);
+      if (decodedSuid) {
+        const canonicalRoleId = encodeSuidToRoleId(decodedSuid);
+        const byRole = await resolveBySuid(decodedSuid, canonicalRoleId, 'role_id');
+        if (byRole.found) {
+          req.auditDetails = { query: canonicalRoleId, mode: 'role_id', resultCount: byRole.players.length };
+          return res.json({
+            success: true,
+            query: rawQuery,
+            mode: 'auto',
+            resolvedBy: 'role_id',
+            decoded: byRole.decoded,
+            notFoundInGame: false,
+            availableClients: lastWsClientStatus.availableClients,
+            players: byRole.players,
+          });
+        }
+        const byName = await searchByName(rawQuery);
+        req.auditDetails = { nickname: rawQuery, mode: 'name', resultCount: byName.players.length };
+        return res.json({
+          success: true,
+          query: rawQuery,
+          mode: 'auto',
+          resolvedBy: byName.players.length > 0 ? 'name' : 'role_id',
+          decoded: byRole.decoded,
+          notFoundInGame: byName.players.length === 0,
+          availableClients: lastWsClientStatus.availableClients,
+          players: byName.players,
+        });
+      }
+    }
+
+    result = await searchByName(rawQuery);
+    req.auditDetails = { nickname: rawQuery, mode: 'name', resultCount: result.players.length };
+    res.json({
+      success: true,
+      query: rawQuery,
+      mode: 'auto',
+      resolvedBy: 'name',
+      availableClients: lastWsClientStatus.availableClients,
+      players: result.players,
+    });
+  } catch (err) {
+    res.status(err?.status === 429 ? 429 : 400).json({
+      success: false,
+      message: publicError(req, err, 'Lỗi khi trích xuất dữ liệu nhân vật từ client nguồn.'),
+    });
+  }
+});
+
+app.post('/api/tools/identity/profile', requireAuth, limitInteractive, async (req, res) => {
+  try {
+    const rawSuid = typeof req.body?.suid === 'string' ? req.body.suid.trim() : '';
+    const rawRoleId = typeof req.body?.role_id === 'string' ? req.body.role_id.trim() : '';
+    const suid = /^\d{1,20}$/.test(rawSuid) ? rawSuid : decodeRoleIdToSuid(rawRoleId);
+    if (!suid) {
+      return res.status(400).json({ success: false, message: 'SUID hoặc Role ID không hợp lệ.' });
+    }
+    const detail = await withWsSlot(req.user.id, () => requestProfileDetailByWebSocket(suid, 6000));
+    const player = normalizeIdentityPlayerFromDetail(detail, suid);
+    req.auditDetails = { suid: player.suid, roleId: player.roleId };
+    res.json({
+      success: true,
+      availableClients: lastWsClientStatus.availableClients,
+      player,
+    });
+  } catch (err) {
+    res.status(err?.status === 429 ? 429 : 400).json({
+      success: false,
+      message: publicError(req, err, 'Không thể tải hồ sơ chi tiết của nhân vật này.'),
     });
   }
 });
