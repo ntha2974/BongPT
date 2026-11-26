@@ -635,17 +635,21 @@ async function loadOrders(forceRefresh = false, timeoutMs = 6500) {
   return false;
 }
 
+let adminOverviewVersion = 0;
 async function loadAdminOverview() {
   if (!state.user || state.user.role !== 'admin') return;
   const requestToken = state.token;
+  const version = ++adminOverviewVersion;
   try {
     const r = await apiFetch('/api/admin/overview');
-    if (r.success && state.token === requestToken && state.user?.role === 'admin') {
+    if (r.success && version === adminOverviewVersion && state.token === requestToken && state.user?.role === 'admin') {
       state.adminOverview = r;
     }
   } catch (err) {
     console.error('Error loading admin overview:', err);
+    return false;
   }
+  return true;
 }
 
 // ============================================================================
@@ -673,12 +677,12 @@ function switchView(viewKey) {
   }
   setMobileMenuOpen(false);
 
-  if (['admin_ctv', 'admin_system', 'admin_pricing'].includes(viewKey) && !state.adminOverview) {
+  if (viewKey === 'admin_ctv' || (['admin_system', 'admin_pricing'].includes(viewKey) && !state.adminOverview)) {
     const container = document.getElementById('mainViewContainer');
     container.textContent = 'Đang tải dữ liệu quản trị…';
-    loadAdminOverview().then(() => {
+    loadAdminOverview().then(loaded => {
       if (state.currentView !== viewKey || state.user?.role !== 'admin') return;
-      if (state.adminOverview) renderCurrentView();
+      if (loaded && state.adminOverview) renderCurrentView();
       else container.textContent = 'Chưa tải được dữ liệu quản trị. Chọn lại mục này để thử lại.';
     });
     return;
@@ -4263,11 +4267,11 @@ function renderAdminCtvPageHtml() {
       </div>
       <div class="glass-panel">
         <div style="font-size:12px;color:var(--color-moon-mist);">Tổng doanh thu CTV đặt đơn</div>
-        <div style="font-size:24px;font-weight:700;color:#895d0a;margin-top:4px;">${formatVnd(stats.totalRevenue || 0)}</div>
+        <div style="font-size:24px;font-weight:700;color:#895d0a;margin-top:4px;">${formatVnd(stats.ctvRevenue)}</div>
       </div>
       <div class="glass-panel">
         <div style="font-size:12px;color:var(--color-moon-mist);">Tổng lợi nhuận chênh lệch Admin</div>
-        <div style="font-size:24px;font-weight:700;color:#28754e;margin-top:4px;">+${formatVnd(stats.totalProfit || 0)}</div>
+        <div style="font-size:24px;font-weight:700;color:${stats.ctvProfit < 0 ? '#ab334a' : '#28754e'};margin-top:4px;">${stats.ctvProfit > 0 ? '+' : ''}${formatVnd(stats.ctvProfit)}</div>
       </div>
     </div>
 
@@ -4332,11 +4336,11 @@ function renderAdminCtvPageHtml() {
                 <td>${u.totalOrders || 0} đơn</td>
                 <td>
                   <div>Đã mua: ${formatVnd(u.totalSpent || 0)}</div>
-                  <div style="font-size:11px;color:#28754e;">Lãi Admin: +${formatVnd(u.totalProfit || 0)}</div>
+                  <div style="font-size:11px;color:${u.totalProfit < 0 ? '#ab334a' : '#28754e'};">Lãi Admin: ${u.totalProfit > 0 ? '+' : ''}${formatVnd(u.totalProfit)}</div>
                 </td>
                 <td>
-                  <span class="badge-tag ${u.isLocked ? 'red' : u.balance > 0 ? 'green' : 'amber'}">
-                    ${u.isLocked ? 'Đã khóa' : u.balance > 0 ? 'Đủ điều kiện đặt đơn' : 'Ví 0đ (Tạm chặn)'}
+                  <span class="badge-tag ${u.isLocked ? 'red' : u.balance > 0 && !isMaintenance ? 'green' : 'amber'}">
+                    ${u.isLocked ? 'Đã khóa' : isMaintenance ? 'Đang bảo trì' : u.balance > 0 ? 'Đủ điều kiện đặt đơn' : 'Ví 0đ (Tạm chặn)'}
                   </span>
                 </td>
                 <td>
@@ -4347,8 +4351,8 @@ function renderAdminCtvPageHtml() {
                     <button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;" data-lock-ctv="${u.id}" data-locked="${u.isLocked ? '1' : '0'}">
                       ${u.isLocked ? 'Mở khóa' : 'Khóa'}
                     </button>
-                    <button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;color:#ab334a;" data-del-ctv="${u.id}">
-                      Ngừng tài khoản
+                    <button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;color:#ab334a;" data-del-ctv="${escapeHtml(u.id)}">
+                      Xóa tài khoản CTV
                     </button>
                     <button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;" data-reset-ctv="${u.id}">Đổi mật khẩu</button>
                   </div>
@@ -4356,7 +4360,7 @@ function renderAdminCtvPageHtml() {
               </tr>
             `
               )
-              .join('')}
+              .join('') || '<tr><td colspan="7">Chưa có tài khoản CTV.</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -4467,14 +4471,31 @@ function bindAdminCtvEvents() {
 
   document.querySelectorAll('[data-del-ctv]').forEach((btn) => {
     btn.addEventListener('click', async () => {
-      if (!confirm('Ngừng tài khoản CTV này? Các phiên sẽ bị thu hồi; số dư và lịch sử vẫn được giữ để đối soát.')) return;
+      const id = btn.dataset.delCtv;
+      const ctv = state.adminOverview?.ctvs.find(u => u.id === id);
+      if (!ctv || btn.disabled) return;
+      if (!confirm(`Xóa vĩnh viễn tài khoản CTV "${ctv.username}" (${ctv.name})?\n\nCTV sẽ mất quyền đăng nhập. Lịch sử đơn và giao dịch ví được giữ để đối soát.`)) return;
+      btn.disabled = true;
       try {
-        const r = await apiFetch(`/api/admin/ctv/${btn.dataset.delCtv}`, 'DELETE');
+        const r = await apiFetch(`/api/admin/ctv/${encodeURIComponent(id)}`, 'DELETE', { confirmDelete: true });
+        state.adminOverview.ctvs = state.adminOverview.ctvs.filter(u => u.id !== id);
+        state.adminOverview.stats.totalCtvCount = state.adminOverview.ctvs.length;
+        state.adminMonitor = null;
+        if (state.adminMonitorCtvId === id) {
+          state.adminMonitorCtvId = null;
+          state.adminMonitorCtvDetail = null;
+        }
+        if (state.pricingCtvId === id) {
+          state.pricingCtvId = '';
+          state.pricingCatalog = null;
+        }
         showToast(r.message);
-        await loadAdminOverview();
-        renderCurrentView();
       } catch (err) {
         showToast(err.message);
+      } finally {
+        await loadAdminOverview();
+        if (state.currentView === 'admin_ctv') renderCurrentView();
+        btn.disabled = false;
       }
     });
   });

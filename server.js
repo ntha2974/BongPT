@@ -1792,7 +1792,7 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
     (u) => u.email?.toLowerCase() === loginKey || u.username?.toLowerCase() === loginKey
   );
 
-  if (!user || !(await verifyPasswordAsync(pwd, user.password))) {
+  if (!user || !(await verifyPasswordAsync(pwd, user.password)) || !db.users.includes(user)) {
     loginAccountFailures.hit(loginKey, 10 * 60 * 1000, 10);
     recordAbuseStrike(ip, 2);
     // Only persist first 3 failed-login audit entries per IP/minute so attackers cannot flood auditLog/DB
@@ -4228,6 +4228,12 @@ app.get('/api/settlements', requireAuth, async (req, res) => {
 app.use('/api/admin', requireAdmin);
 app.use('/api/admin', (req, res, next) => req.method === 'GET' ? next() : financialGuard(req, res, next));
 
+function netOrderAmounts(order) {
+  const revenue = Number(order.sellPrice || 0) - Number(order.refundedAmount || 0);
+  const cost = Number(order.costPrice || 0) - Number(order.sourceRefunded || 0);
+  return { revenue, cost, profit: revenue - cost };
+}
+
 app.get('/api/admin/monitor', asyncRoute(async (req, res) => {
   const weekStart = getCurrentMondayStr();
   const settlement = await hnApiCall(`/api/seller-settlements?week_start=${weekStart}`, 'GET', null, true, 4500).catch(() => null);
@@ -4240,10 +4246,9 @@ app.get('/api/admin/monitor', asyncRoute(async (req, res) => {
     if (!uid) continue;
     const st = orderStatsByCtv.get(uid) || { orderCount: 0, totalSell: 0, totalProfit: 0, lastOrderAt: null };
     st.orderCount += 1;
-    if (o.status !== 'cancelled') {
-      st.totalSell += Number(o.sellPrice || 0);
-      st.totalProfit += Number(o.markupAmount || 0);
-    }
+    const { revenue, profit } = netOrderAmounts(o);
+    st.totalSell += revenue;
+    st.totalProfit += profit;
     if (!st.lastOrderAt || String(o.createdAt || '') > st.lastOrderAt) st.lastOrderAt = o.createdAt || null;
     orderStatsByCtv.set(uid, st);
   }
@@ -4280,12 +4285,13 @@ app.get('/api/admin/monitor/ctv/:id', (req, res) => {
   let runningCount = 0;
   let cancelledCount = 0;
   for (const o of ctvOrders) {
+    const amounts = netOrderAmounts(o);
+    totalSell += amounts.revenue;
+    totalCost += amounts.cost;
+    totalProfit += amounts.profit;
     if (o.status === 'cancelled') {
       cancelledCount += 1;
     } else {
-      totalSell += Number(o.sellPrice || 0);
-      totalCost += Number(o.costPrice || 0);
-      totalProfit += Number(o.markupAmount || 0);
       if (o.status === 'completed') completedCount += 1;
       else runningCount += 1;
     }
@@ -4460,23 +4466,31 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
     }
   } catch {}
 
-  const ctvList = db.users
-    .filter((u) => u.role === 'ctv')
-    .map((u) => {
-      const ctvOrders = db.localOrders.filter((o) => o.placedBy?.id === u.id);
-      const totalSpent = ctvOrders.reduce((s, o) => s + Number(o.sellPrice || 0) - Number(o.refundedAmount || 0), 0);
-      const totalProfit = ctvOrders.reduce((s, o) => s + Number(o.sellPrice || 0) - Number(o.refundedAmount || 0) - Number(o.costPrice || 0) + Number(o.sourceRefunded || 0), 0);
-      return {
-        ...sanitizeUser(u),
-        totalOrders: ctvOrders.length,
-        totalSpent,
-        totalProfit,
-      };
-    });
+  const ctvList = db.users.filter(u => u.role === 'ctv').map(u => ({
+    ...sanitizeUser(u), totalOrders: 0, totalSpent: 0, totalProfit: 0,
+  }));
+  const ctvById = new Map(ctvList.map(ctv => [ctv.id, ctv]));
+  let ctvRevenue = 0;
+  let ctvProfit = 0;
+  let totalRevenue = 0;
+  let totalCost = 0;
+  for (const order of db.localOrders) {
+    const { revenue, cost, profit } = netOrderAmounts(order);
+    totalRevenue += revenue;
+    totalCost += cost;
+    const ctv = ctvById.get(order.placedBy?.id);
+    if (ctv || order.placedBy?.role === 'ctv') {
+      ctvRevenue += revenue;
+      ctvProfit += profit;
+    }
+    if (ctv) {
+      ctv.totalOrders++;
+      ctv.totalSpent += revenue;
+      ctv.totalProfit += profit;
+    }
+  }
 
   const totalLocalOrders = db.localOrders.length;
-  const totalRevenue = db.localOrders.reduce((s, o) => s + Number(o.sellPrice || 0) - Number(o.refundedAmount || 0), 0);
-  const totalCost = db.localOrders.reduce((s, o) => s + Number(o.costPrice || 0) - Number(o.sourceRefunded || 0), 0);
   const totalProfit = totalRevenue - totalCost;
   const totalCtvBalance = ctvList.reduce((s, u) => s + Number(u.balance || 0), 0);
 
@@ -4514,6 +4528,8 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
       },
     },
     stats: {
+      ctvRevenue,
+      ctvProfit,
       totalLocalOrders,
       totalRevenue,
       totalCost,
@@ -5021,13 +5037,33 @@ app.delete('/api/admin/ctv/:id', requireAdmin, asyncRoute(async (req, res) => {
     return res.status(404).json({ success: false, message: 'Không tìm thấy tài khoản CTV.' });
   }
   const removed = db.users[idx];
-  removed.isLocked = true;
-  removed.archivedAt = new Date().toISOString();
-  for (const [token, session] of Object.entries(db.sessions)) if (session.userId === removed.id) delete db.sessions[token];
+  if (req.body?.confirmDelete !== true) {
+    return res.status(400).json({ success: false, message: 'Tải lại trang và xác nhận xóa vĩnh viễn tài khoản CTV.' });
+  }
+  if (Number(removed.balance ?? 0) !== 0) {
+    return res.status(409).json({ success: false, message: 'Hãy đối soát và đưa số dư ví CTV về 0đ trước khi xóa.' });
+  }
+  const pendingIntent = db.orderIntents.some(i => i.userId === removed.id &&
+    (i.requiresReview || ['processing', 'uncertain'].includes(i.status)));
+  const pendingOrder = db.localOrders.find(o => o.placedBy?.id === removed.id &&
+    (o.requiresReview || o.cancelRequested || o.refundPending || o.weatherDeletePending ||
+      (o.status !== 'completed' && !(o.status === 'cancelled' && Number(o.refundedAmount || 0) >= Number(o.sellPrice || 0)))));
+  if (pendingIntent || pendingOrder) {
+    return res.status(409).json({ success: false, message: 'CTV còn đơn đang xử lý hoặc chờ đối soát. Hãy xử lý xong đơn và khoản hoàn trước khi xóa.' });
+  }
+  for (const order of db.localOrders) {
+    if (order.placedBy?.id === removed.id && !order.placedBy.role) order.placedBy.role = 'ctv';
+  }
+  db.users.splice(idx, 1);
+  db.orderIntents = db.orderIntents.filter(i => i.userId !== removed.id || i.reviewedAt);
+  for (const [token, session] of Object.entries(db.sessions)) {
+    if ((session?.userId ?? session) === removed.id) delete db.sessions[token];
+  }
+  req.auditDetails = { userId: removed.id, username: removed.username };
   req.needsSave = true;
   res.json({
     success: true,
-    message: `Đã khóa và lưu trữ tài khoản CTV "${removed.name}"; giữ nguyên số dư, đơn hàng và lịch sử đối soát.`,
+    message: `Đã xóa tài khoản CTV "${removed.username}".`,
   });
 }));
 

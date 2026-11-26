@@ -172,6 +172,14 @@ test('HTTP service restores an imported wallet, session and pending hold after r
   for (const key of ['transactions', 'orderIntents', 'localOrders']) assert.deepEqual(restored[key], backup[key]);
   assert.equal(restored.users.find(u => u.id === 'u').balance, 52500);
   assert.equal((await request('/api/admin/ctv/u/balance', login.token, payload)).status, 409);
+  const created = await (await request('/api/admin/ctv', login.token, { username: 'temporary', name: 'Temporary', password })).json();
+  assert.ok(created.ctv.id);
+  assert.equal((await request('/api/admin/ctv/' + created.ctv.id, login.token, { confirmDelete: true }, 'DELETE')).status, 200);
+  await stop();
+  await start();
+  const afterDelete = await exportData();
+  assert.ok(!afterDelete.users.some(u => u.id === created.ctv.id));
+  assert.deepEqual(afterDelete.transactions, restored.transactions);
 });
 
 test('PostgreSQL upgrades cleanly from bonglee_* physical tables with existing znplay_* views', options, async t => {

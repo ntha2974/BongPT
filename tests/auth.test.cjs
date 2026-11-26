@@ -1304,6 +1304,55 @@ test('unconfirmed source deletion stays in admin reconciliation until a verified
   assert.equal(server.db.users.find(u => u.id === 'seller').balance, 55100);
 });
 
+test('permanent deletion revokes access while retaining net CTV sales and wallet history', async t => {
+  const { db, request, login } = await startTestServer(t, undefined, { seed(data) {
+    data.localOrders.push(
+      { id: 'sale', placedBy: { id: 'seller' }, status: 'completed', sellPrice: 100, costPrice: 80, refundedAmount: 30, sourceRefunded: 20 },
+      { id: 'admin-sale', placedBy: { id: 'owner', role: 'admin' }, status: 'completed', sellPrice: 1000, costPrice: 900 }
+    );
+    data.transactions.push({ id: 'topup', userId: 'seller', type: 'admin_topup', amount: 50000 });
+  } });
+  const admin = (await login('owner', 'owner-test-password')).body.token;
+  const seller = (await login('seller', 'seller-test-password')).body.token;
+  const remove = () => request('/api/admin/ctv/seller', 'DELETE', admin, { confirmDelete: true });
+  assert.equal((await request('/api/admin/ctv/seller', 'DELETE', admin)).status, 400);
+  assert.equal((await request('/api/admin/ctv/owner', 'DELETE', admin, { confirmDelete: true })).status, 404);
+  assert.equal((await remove()).status, 409);
+  await request('/api/admin/ctv/seller/balance', 'POST', admin, { amount: -50000, idempotency_key: crypto.randomUUID() });
+  const order = db.localOrders[0];
+  order.status = 'pending';
+  assert.equal((await remove()).status, 409);
+  order.status = 'cancelled';
+  assert.equal((await remove()).status, 409);
+  order.status = 'completed';
+  db.orderIntents.push({ id: 'check', userId: 'seller', status: 'uncertain' });
+  assert.equal((await remove()).status, 409);
+  db.orderIntents[0].status = 'completed';
+  const overview = async () => (await request('/api/admin/overview', 'GET', admin)).body;
+  const before = await overview();
+  assert.equal(before.ctvs[0].totalSpent, 70);
+  assert.equal(before.ctvs[0].totalProfit, 10);
+  db.users.find(u => u.id === 'seller').archivedAt = new Date().toISOString();
+  assert.deepEqual((await Promise.all([remove(), remove()])).map(r => r.status).sort(), [200, 404]);
+  const after = await overview();
+  assert.equal(after.ctvs.length, 0);
+  assert.equal(after.stats.totalCtvCount, 0);
+  for (const result of [before, after]) {
+    assert.equal(result.stats.ctvRevenue, 70);
+    assert.equal(result.stats.ctvProfit, 10);
+    assert.equal(result.stats.totalRevenue, 1070);
+  }
+  assert.equal(db.orderIntents.length, 0);
+  assert.equal(db.transactions.length, 2);
+  assert.equal(db.sessions[seller], undefined);
+  assert.equal((await request('/api/auth/me', 'GET', seller)).status, 401);
+  assert.equal((await login('seller', 'seller-test-password')).status, 401);
+  const replacement = await request('/api/admin/ctv', 'POST', admin, { username: 'seller', name: 'New seller', password: 'replacement-password' });
+  assert.equal(replacement.body.success, true);
+  assert.notEqual(replacement.body.ctv.id, 'seller');
+  assert.equal((await overview()).ctvs[0].totalOrders, 0);
+});
+
 test('admin per-CTV monitor endpoint returns isolated orders, wallet transactions, and activity logs without secrets', async t => {
   const server = await startTestServer(t, financeSource(), {
     seed(data) {
