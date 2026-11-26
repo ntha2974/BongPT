@@ -673,6 +673,18 @@ function validFruitInput(qty, mutations) {
 }
 
 const searchResults = new Map();
+const lookupPages = new Map();
+function lookupPage(req, field, rows) {
+  const result = listPage(req, { [field]: rows });
+  if (!result.pageInfo?.[field]?.more) return result;
+  const key = crypto.randomUUID();
+  for (const [id, entry] of lookupPages) {
+    if (entry.until < Date.now() || (entry.userId === req.user.id && entry.field === field)) lookupPages.delete(id);
+  }
+  if (lookupPages.size >= 256) lookupPages.delete(lookupPages.keys().next().value);
+  lookupPages.set(key, { userId: req.user.id, field, rows, until: Date.now() + 600000 });
+  return { ...result, nextPath: '/api/customer/search-page/' + key + '?paged=1' };
+}
 const chosenCustomers = new Map();
 const actionLimits = new Map();
 function limitInteractive(req, res, next) {
@@ -1887,8 +1899,7 @@ app.post('/api/auth/logout', asyncRoute(async (req, res) => {
 // ============================================================================
 const CTV_CATALOG_FRESH_MS = 10 * 60 * 1000;   // 10 phút cho CTV xem thường
 const ADMIN_CATALOG_FRESH_MS = 60 * 1000;      // 1 phút cho Admin
-let lastAdminActivityAt = 0;
-let lastCtvActivityAt = 0;
+
 let settingsVersion = Date.now();
 let catalogCache = {
   timestamp: 0,
@@ -1909,6 +1920,8 @@ const VALID_CATALOG_SCOPES = new Set([
   'fruit_coin',
   'fruit_by_fruit',
   'fruit_all',
+  'summary',
+  'admin_summary',
   'buff_tim',
   'buff_sao',
   'guestbook',
@@ -1960,6 +1973,10 @@ async function fetchScopedCatalogFromHoanNguyen(scope, { force = true, maxAgeMs 
     const reqs = {
       settings: hnApiCall(SETTINGS_KEYS_PATH, 'GET', null, true, timeoutMs).catch(error => ({ upstreamError: error })),
     };
+    if (scope === 'summary' || scope === 'admin_summary') {
+      reqs.rates = hnApiCall('/api/tasks/processing-rate', 'GET', null, true, timeoutMs).catch(() => null);
+      if (scope === 'admin_summary') reqs.settlement = hnApiCall('/api/seller-settlements?week_start=' + getCurrentMondayStr(), 'GET', null, true, timeoutMs).catch(() => null);
+    }
     if (scope === 'fruit_coin' || scope === 'fruit_all') {
       reqs.fruitCoin = hnApiCall('/api/fruit-coin-price-packages?active=1', 'GET', null, true, timeoutMs).catch(error => ({ upstreamError: error }));
       reqs.fruitStock = hnApiCall('/api/fruit-stock', 'GET', null, true, timeoutMs).catch(() => ({ data: [], meta: {} }));
@@ -2000,6 +2017,8 @@ async function fetchScopedCatalogFromHoanNguyen(scope, { force = true, maxAgeMs 
 
     const raw = ensureRawCatalogShell();
     raw.hnSettings = results.settings?.data || raw.hnSettings || {};
+    if (results.rates) raw.processingRates = results.rates.data || {};
+    if (results.settlement) raw.weeklyLimit = results.settlement.data?.weekly_limit || null;
     if (results.fruitCoin) raw.fruitCoinPackages = Array.isArray(results.fruitCoin.data) ? results.fruitCoin.data : [];
     if (results.fruitItems) raw.fruitItems = Array.isArray(results.fruitItems.data) ? results.fruitItems.data : [];
     if (results.fruitStock) {
@@ -2221,8 +2240,7 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
     const user = req.user;
     const isAdmin = user.role === 'admin';
     const now = Date.now();
-    if (isAdmin) lastAdminActivityAt = now;
-    else lastCtvActivityAt = now;
+
 
     let priceOwner = isAdmin ? null : user;
     if (req.query.ctvId !== undefined) {
@@ -2232,7 +2250,7 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
     }
 
     const rawScope = typeof req.query.scope === 'string' ? req.query.scope.trim() : '';
-    const scope = VALID_CATALOG_SCOPES.has(rawScope) ? rawScope : '';
+    const scope = rawScope === 'admin_summary' && !isAdmin ? 'summary' : VALID_CATALOG_SCOPES.has(rawScope) ? rawScope : '';
     const compact = req.query.compact === '1' && !isAdmin;
     const maxAgeMs = isAdmin ? ADMIN_CATALOG_FRESH_MS : CTV_CATALOG_FRESH_MS;
     const lastScopeTs = scope
@@ -2256,7 +2274,8 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
 
     const productPrices = priceOwner?.productPrices ?? (isAdmin && priceOwner ? {} : null);
     const cacheKey = `${isAdmin ? 'admin' : 'ctv'}:${productPrices ? priceOwner.id : ''}:${scope || 'all'}:${compact ? 'c' : 'f'}:${settingsVersion}:${raw.syncedAt}`;
-    const memoized = catalogResponseCache.get(cacheKey);
+    const pageKey = cacheKey + (req.query.paged === '1' ? JSON.stringify([req.query.only, req.query.after, req.query.q, req.query.custom, req.query.sort, req.query.selected, req.query.pricingTab, req.query.pkgCat]) : '');
+    const memoized = catalogResponseCache.get(pageKey);
     if (memoized) {
       return sendPackedCatalog(req, res, memoized);
     }
@@ -2282,8 +2301,11 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
       fruit_by_fruit: isSendTask && enabled(raw.hnSettings?.is_send_fruitorder),
     };
 
-    const want = (k) => !scope || scope === k || (scope === 'fruit_all' && (k === 'fruit_coin' || k === 'fruit_by_fruit'));
+    const want = (k) => (!scope || scope === k || (scope === 'fruit_all' && (k === 'fruit_coin' || k === 'fruit_by_fruit'))) && !(isAdmin && req.query.pricingTab === 'packages' && k === 'fruit_by_fruit');
     const catalog = {};
+    let fruitPage;
+    let fruitStockTotal;
+    let fruitCounts;
 
     // 1. Fruit Coin Packages
     if (want('fruit_coin')) {
@@ -2314,7 +2336,23 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
         stockMap.set(Number(s.fruit_item_id), s);
       }
 
-      catalog.fruit_by_fruit = raw.fruitItems.map((fi) => {
+      let fruitItems = raw.fruitItems;
+      if (req.query.paged === '1') {
+        const q = String(req.query.q || '').trim().toLowerCase();
+        const overrides = (productPrices || db.settings).fruitUnitPrices || {};
+        fruitStockTotal = fruitItems.reduce((sum, f) => sum + Number(stockMap.get(Number(f.id))?.total_quantity || 0), 0);
+        fruitCounts = { all: fruitItems.length, custom: fruitItems.filter(f => overrides[f.id] != null).length };
+        fruitItems = fruitItems.filter(f => (!q || String(f.item?.name || 'Trái #' + f.id).toLowerCase().includes(q)) &&
+          (req.query.custom !== '1' || (isAdmin && overrides[f.id] != null)));
+        if (req.query.sort === 'stock') fruitItems.sort((a, b) => Number(stockMap.get(Number(b.id))?.total_quantity || 0) - Number(stockMap.get(Number(a.id))?.total_quantity || 0));
+        const selected = fruitItems.findIndex(f => String(f.id) === req.query.selected);
+        if (selected > 0) fruitItems.unshift(...fruitItems.splice(selected, 1));
+        const page = listPage(req, { fruit_by_fruit: fruitItems });
+        fruitPage = page.pageInfo.fruit_by_fruit;
+        fruitItems = page.fruit_by_fruit || [];
+        if (req.query.pricingTab === 'categories') fruitItems = fruitItems.slice(0, 1);
+      }
+      catalog.fruit_by_fruit = fruitItems.map((fi) => {
         const st = stockMap.get(Number(fi.id));
         const iconPath = fi.item?.icon_path_and_name
           ? `/assets/playtogether/images/${fi.item.icon_path_and_name.replace(/^\/+/, '').replace(/\.png$/i, '')}.png`
@@ -2432,13 +2470,13 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
         return [key, { ...categoryRule(key, productPrices), personal: Boolean(productPrices.categoryRules?.[key]), productCount }];
       })) : undefined,
       systemStatus,
-      processingRates: scope ? undefined : raw.processingRates,
+      processingRates: !scope || scope.endsWith('summary') ? raw.processingRates : undefined,
       hnSettings: {
         min_coin_per_fruit: raw.hnSettings?.min_coin_per_fruit ?? 400000,
         max_coin_for_fruit_order: raw.hnSettings?.max_coin_for_fruit_order ?? 600000,
         max_fruits_per_customer_per_day: raw.hnSettings?.max_fruits_per_customer_per_day ?? 30,
       },
-      weeklyLimit: isAdmin && !scope ? raw.weeklyLimit : undefined,
+      weeklyLimit: isAdmin && (!scope || scope === 'admin_summary') ? raw.weeklyLimit : undefined,
       coinStock: (!scope || scope === 'fruit_coin' || scope === 'fruit_by_fruit' || scope === 'fruit_all')
         ? (raw.fruitStockMeta?.coin ? { quantity: Number(raw.fruitStockMeta.coin.quantity) || 0, estimated_per_hour: Number(raw.fruitStockMeta.coin.estimated_per_hour) || 0 } : null)
         : undefined,
@@ -2448,9 +2486,51 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
       mutations: (!scope || scope === 'fruit_by_fruit' || scope === 'fruit_all') ? FRUIT_MUTATIONS : undefined,
       catalog,
     };
+    if (req.query.paged === '1') {
+      if (isAdmin && !fruitCounts && Array.isArray(raw.fruitItems) && raw.fruitItems.length > 0) {
+        const overrides = (productPrices || db.settings).fruitUnitPrices || {};
+        fruitCounts = { all: raw.fruitItems.length, custom: raw.fruitItems.filter(f => overrides[f.id] != null).length };
+      }
+      payload.totalFruitStock = fruitStockTotal;
+      if (isAdmin) payload.fruitCounts = fruitCounts;
+      let lists = catalog;
+      if (isAdmin && req.query.pricingTab === 'packages') {
+        const packages = [];
+        const counts = {};
+        for (const key of ['fruit_coin','buff_tim','buff_sao','guestbook','weather_buff','farm_gift','mail_gift']) {
+          const rows = catalog[key] || [];
+          const grouped = key === 'farm_gift' || key === 'mail_gift';
+          let count = 0;
+          for (const row of rows) {
+            for (const pkg of grouped ? row.packages || [] : [row]) {
+              count++;
+              if (req.query.pkgCat && req.query.pkgCat !== 'all' && req.query.pkgCat !== key) continue;
+              packages.push({ id: key + ':' + pkg.id, category: key, giftName: grouped ? row.name : null, pkg });
+            }
+          }
+          counts[key] = count;
+        }
+        payload.packageCounts = counts;
+        lists = { pricing_packages: packages };
+      } else if (isAdmin && req.query.pricingTab === 'categories') {
+        lists = Object.fromEntries(Object.entries(catalog).map(([key, rows]) => [key, rows.slice(0, 1)]));
+      } else if (fruitPage) {
+        const { fruit_by_fruit: _alreadyPaged, ...rest } = catalog;
+        lists = rest;
+      }
+      const { pageInfo, ...items } = listPage(req, lists);
+      if (fruitPage && req.query.pricingTab !== 'categories' && req.query.pricingTab !== 'packages') {
+        if (!req.query.only || req.query.only === 'fruit_by_fruit') {
+          items.fruit_by_fruit = catalog.fruit_by_fruit;
+          pageInfo.fruit_by_fruit = fruitPage;
+        }
+      }
+      payload.catalog = items;
+      payload.pageInfo = pageInfo;
+    }
     const packed = packCatalogCacheEntry(payload);
     if (catalogResponseCache.size > 24) catalogResponseCache.clear();
-    catalogResponseCache.set(cacheKey, packed);
+    catalogResponseCache.set(pageKey, packed);
     return sendPackedCatalog(req, res, packed);
   } catch (err) {
     console.error('Error in GET /api/catalog:', err);
@@ -2463,6 +2543,7 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
 
 // Preview Fruit Order Price (Calculates CTV selling price using Admin's per-fruit/per-mutation prices)
 app.post('/api/catalog/preview-fruit', requireAuth, limitInteractive, async (req, res) => {
+  req.skipAudit = true;
   try {
     const user = req.user;
     const isAdmin = user.role === 'admin';
@@ -2471,7 +2552,7 @@ app.post('/api/catalog/preview-fruit', requireAuth, limitInteractive, async (req
     const muts = mutation_list === undefined ? [] : mutation_list;
     if (!validFruitInput(qty, muts)) return res.status(400).json({ success: false, message: 'Số lượng phải là số nguyên 1–1500; hệ đột biến phải hợp lệ và không trùng.' });
 
-    const raw = await fetchRawCatalogFromHoanNguyen(false);
+    const raw = await fetchScopedCatalogFromHoanNguyen('fruit_by_fruit', { force: false });
     const fi = raw.fruitItems.find((f) => Number(f.id) === Number(fruit_item_id));
     if (!fi) {
       return res.status(404).json({ success: false, message: 'Không tìm thấy loại trái cây này.' });
@@ -2545,13 +2626,21 @@ app.post('/api/customer/search-ingame', requireAuth, limitInteractive, async (re
     }
     searchResults.set(req.user.id, { profiles, until: Date.now() + 10 * 60000 });
     req.auditDetails = { nickname: nickname.trim(), resultCount: profiles.length };
-    res.json({ success: true, profiles });
+    res.json({ success: true, ...lookupPage(req, 'profiles', profiles) });
   } catch (err) {
     res.status(400).json({
       success: false,
       message: publicError(req, err, 'Lỗi khi tìm kiếm nhân vật trong game.'),
     });
   }
+});
+
+app.get('/api/customer/search-page/:id', requireAuth, (req, res) => {
+  const entry = lookupPages.get(req.params.id);
+  if (!entry || entry.userId !== req.user.id || entry.until <= Date.now()) {
+    return res.status(404).json({ success: false, message: 'Kết quả đã hết hạn. Vui lòng tìm lại.' });
+  }
+  return res.json({ success: true, ...listPage(req, { [entry.field]: entry.rows }) });
 });
 
 app.post('/api/customer/select-ingame', requireAuth, limitInteractive, async (req, res) => {
@@ -2645,7 +2734,7 @@ app.get('/api/customer/saved', requireAuth, requireAdmin, async (req, res) => {
   try {
     const q = String(req.query.q || '').trim();
     const page = String(req.query.page || '1');
-    const qs = new URLSearchParams({ page, per_page: '15' });
+    const qs = new URLSearchParams({ page, per_page: req.query.paged === '1' ? '10' : '15' });
     if (q) qs.set('q', q);
 
     const r = await hnApiCall(`/api/customers?${qs.toString()}`);
@@ -2653,6 +2742,9 @@ app.get('/api/customer/saved', requireAuth, requireAdmin, async (req, res) => {
     res.json({
       success: true,
       customers: list,
+      pageInfo: req.query.paged === '1' ? { customers: { total: r?.data?.total,
+        more: r?.data?.total != null ? Number(page) * 10 < r.data.total : list.length === 10,
+        nextPage: Number(page) + 1 } } : undefined,
       total: r?.data?.total || list.length,
     });
   } catch (err) {
@@ -2798,7 +2890,7 @@ app.post('/api/tools/identity/lookup', requireAuth, limitInteractive, async (req
         decoded: result.decoded,
         notFoundInGame: !result.found,
         availableClients: lastWsClientStatus.availableClients,
-        players: result.players,
+        ...lookupPage(req, 'players', result.players),
       });
     }
 
@@ -2820,7 +2912,7 @@ app.post('/api/tools/identity/lookup', requireAuth, limitInteractive, async (req
         decoded: result.decoded,
         notFoundInGame: !result.found,
         availableClients: lastWsClientStatus.availableClients,
-        players: result.players,
+        ...lookupPage(req, 'players', result.players),
       });
     }
 
@@ -2833,7 +2925,7 @@ app.post('/api/tools/identity/lookup', requireAuth, limitInteractive, async (req
         mode: 'name',
         resolvedBy: 'name',
         availableClients: lastWsClientStatus.availableClients,
-        players: result.players,
+        ...lookupPage(req, 'players', result.players),
       });
     }
 
@@ -2852,7 +2944,7 @@ app.post('/api/tools/identity/lookup', requireAuth, limitInteractive, async (req
           decoded: result.decoded,
           notFoundInGame: !result.found,
           availableClients: lastWsClientStatus.availableClients,
-          players: result.players,
+          ...lookupPage(req, 'players', result.players),
         });
       }
     }
@@ -2871,7 +2963,7 @@ app.post('/api/tools/identity/lookup', requireAuth, limitInteractive, async (req
             decoded: result.decoded,
             notFoundInGame: false,
             availableClients: lastWsClientStatus.availableClients,
-            players: result.players,
+            ...lookupPage(req, 'players', result.players),
           });
         }
         // Fallback: maybe a player literally has a 15+ digit numeric nickname
@@ -2884,7 +2976,7 @@ app.post('/api/tools/identity/lookup', requireAuth, limitInteractive, async (req
             mode: 'auto',
             resolvedBy: 'name',
             availableClients: lastWsClientStatus.availableClients,
-            players: byName.players,
+            ...lookupPage(req, 'players', byName.players),
           });
         }
         req.auditDetails = { query: rawQuery, mode: 'suid', resultCount: 0 };
@@ -2916,7 +3008,7 @@ app.post('/api/tools/identity/lookup', requireAuth, limitInteractive, async (req
             decoded: byRole.decoded,
             notFoundInGame: false,
             availableClients: lastWsClientStatus.availableClients,
-            players: byRole.players,
+            ...lookupPage(req, 'players', byRole.players),
           });
         }
         const byName = await searchByName(rawQuery);
@@ -2929,7 +3021,7 @@ app.post('/api/tools/identity/lookup', requireAuth, limitInteractive, async (req
           decoded: byRole.decoded,
           notFoundInGame: byName.players.length === 0,
           availableClients: lastWsClientStatus.availableClients,
-          players: byName.players,
+          ...lookupPage(req, 'players', byName.players),
         });
       }
     }
@@ -2942,7 +3034,7 @@ app.post('/api/tools/identity/lookup', requireAuth, limitInteractive, async (req
       mode: 'auto',
       resolvedBy: 'name',
       availableClients: lastWsClientStatus.availableClients,
-      players: result.players,
+      ...lookupPage(req, 'players', result.players),
     });
   } catch (err) {
     res.status(err?.status === 429 ? 429 : 400).json({
@@ -3476,6 +3568,105 @@ async function fetchRemoteOrderPages(cache) {
   return cache.result;
 }
 
+const orderCategories = ['fruit_all','fruit_all','buff_tim','buff_tim','buff_sao','buff_sao','guestbook','farm_gift','mail_gift','weather_buff','weather_buff'];
+const orderPathGroups = ['active','completed','active','completed','active','completed','both','both','both','active','completed'];
+
+// Keep only source pages actually requested. Page N is read on demand, and
+// shared across clients. Clearing orderCache after a mutation also invalidates these pages.
+async function readOrderWindow(category, isAdmin, userId, depth, refresh, progress = 'all') {
+  const visible = isAdmin ? null : new Set(db.localOrders.filter(o => o.placedBy?.id === userId)
+    .map(o => String(o.category || '').startsWith('fruit_') ? 'fruit_all' : o.category));
+  const cache = orderCache;
+  const streams = cache.streams ??= new Map();
+  let more = false;
+  let partial = false;
+  const pages = await Promise.all(orderPaths.map(async (path, index) => {
+    const cat = orderCategories[index];
+    const group = orderPathGroups[index];
+    if ((category !== 'all' && cat !== category) || (visible && !visible.has(cat))) return null;
+    if (progress === 'running' && group === 'completed') return null;
+    const summaryOnlyActive = progress === 'completed' && group === 'active';
+    const streamDepth = summaryOnlyActive ? (isAdmin ? 1 : 0) : depth;
+    if (streamDepth <= 0) return null;
+
+    let stream = streams.get(index);
+    const now = Date.now();
+    const allowRefresh = refresh && (isAdmin || !stream || now - stream.at > 2500);
+    const needsReset = !stream || (depth === 1 && (allowRefresh || now - stream.at > ORDER_FRESH_MS));
+
+    if (needsReset) {
+      if (stream?.pending) {
+        try { await stream.pending; stream = streams.get(index) || stream; }
+        catch { partial = true; }
+      } else {
+        const prevStream = stream;
+        const freshStream = { rows: [], page: 0, more: true, at: now, summary: prevStream?.summary, total: prevStream?.total ?? null, pending: null };
+        const url = path.replace(/per_page=\d+/, 'per_page=10');
+        const job = hnApiCall(url, 'GET', null, true, 5000).then(response => {
+          const data = response?.data;
+          if (!Array.isArray(data?.data)) throw new Error('Danh sách nguồn chưa sẵn sàng.');
+          freshStream.rows = [...data.data];
+          freshStream.page = 1;
+          freshStream.at = Date.now();
+          freshStream.summary = response.summary ?? data.summary ?? freshStream.summary;
+          freshStream.total = Number.isFinite(Number(data.total)) ? Number(data.total) : null;
+          freshStream.more = freshStream.rows.length > 0 && (data.last_page != null ? 1 < Number(data.last_page) :
+            freshStream.total != null ? 10 < freshStream.total : data.data.length === 10);
+          streams.set(index, freshStream);
+        }).finally(() => {
+          freshStream.pending = null;
+          if (prevStream && prevStream.pending === job) prevStream.pending = null;
+        });
+        freshStream.pending = job;
+        if (prevStream) prevStream.pending = job;
+        else streams.set(index, freshStream);
+        try {
+          await job;
+          stream = streams.get(index) || freshStream;
+        } catch {
+          partial = true;
+          if (!prevStream) streams.delete(index);
+          stream = prevStream || { rows: [], page: 0, more: false, at: 0, summary: undefined, total: null };
+        }
+      }
+    }
+
+    while (stream.page < streamDepth && stream.more) {
+      if (!stream.pending) {
+        const page = stream.page + 1;
+        const url = path.replace('page=1', 'page=' + page).replace(/per_page=\d+/, 'per_page=10');
+        stream.pending = hnApiCall(url, 'GET', null, true, 5000).then(response => {
+          const data = response?.data;
+          if (!Array.isArray(data?.data)) throw new Error('Danh sách nguồn chưa sẵn sàng.');
+          const known = new Set(stream.rows.map(o => o.id));
+          const fresh = data.data.filter(o => !known.has(o.id));
+          stream.rows.push(...fresh);
+          stream.page = page;
+          stream.summary = response.summary ?? data.summary ?? stream.summary;
+          stream.total = Number.isFinite(Number(data.total)) ? Number(data.total) : null;
+          stream.more = fresh.length > 0 && (data.last_page != null ? page < Number(data.last_page) :
+            stream.total != null ? page * 10 < stream.total : data.data.length === 10);
+        }).finally(() => { stream.pending = null; });
+      }
+      try {
+        await stream.pending;
+      } catch {
+        partial = true;
+        break;
+      }
+    }
+    const count = Math.min(streamDepth, stream.page) * 10;
+    if (!summaryOnlyActive) {
+      more ||= stream.more || stream.rows.length > count;
+    }
+    return {
+      summary: stream.summary,
+      data: { data: summaryOnlyActive ? [] : stream.rows.slice(0, count), total: stream.total },
+    };
+  }));
+  return { pages, partial, more };
+}
+
 app.get('/api/orders', requireAuth, async (req, res) => {
   try {
     const user = req.user;
@@ -3493,7 +3684,12 @@ app.get('/api/orders', requireAuth, async (req, res) => {
     if (!isAdmin && !db.localOrders.some(order => order.placedBy?.id === user.id)) {
       return res.json({ success: true, orders: [], partial: false });
     }
-    const remote = await loadRemoteOrders(force);
+    const paged = req.query.paged === '1';
+    const depth = Math.max(1, Math.min(50, Math.floor(Number(req.query.depth) || 1)));
+    const progressFilter = ['running', 'completed'].includes(req.query.progress) ? req.query.progress : 'all';
+    const remote = paged
+      ? await readOrderWindow(categoryFilter, isAdmin, user.id, depth, wantRefresh, progressFilter)
+      : await loadRemoteOrders(force);
 
     // Fetch live active & completed orders from HoanNguyen across all endpoints
     const [
@@ -3688,11 +3884,31 @@ app.get('/api/orders', requireAuth, async (req, res) => {
       }
     }
 
-    results.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    results.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)) || String(a.id).localeCompare(String(b.id)));
+    const sourceCount = paged && isAdmin ? remote.pages.reduce((n,p) => n + Number(p?.data?.total || 0), 0) : 0;
+    const orderStats = paged ? {
+      total_orders: Math.max(results.length, sourceCount),
+      completed_orders: results.filter(o => o.status === 'completed').length,
+      active_orders: results.filter(o => o.status !== 'completed' && o.isActive).length,
+      inactive_orders: results.filter(o => o.status !== 'completed' && !o.isActive).length,
+      total_units: results.reduce((sum,o) => sum + Number(o.totalCnt || 0), 0),
+      completed_units: results.reduce((sum,o) => sum + Number(o.completedCnt || 0), 0),
+      active_units: 0, inactive_units: 0, partial: isAdmin && remote.more,
+    } : undefined;
+    if (paged) for (const o of results) {
+      if (o.status !== 'completed') orderStats[o.isActive ? 'active_units' : 'inactive_units'] += Math.max(0, o.totalCnt - o.completedCnt);
+    }
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const matches = paged ? results.filter(o =>
+      (req.query.active !== '1' || o.isActive) && (req.query.active !== '0' || !o.isActive) &&
+      (req.query.progress !== 'completed' || o.status === 'completed') && (req.query.progress !== 'running' || o.status !== 'completed') &&
+      (!q || [o.customer?.nickname, o.customer?.suid, o.remoteOrderId, o.id, o.weather?.trackUrl].some(v => String(v ?? '').toLowerCase().includes(q)))) : results;
 
     res.json({
       success: true,
-      orders: results,
+      orders: paged ? matches.slice(0, depth * 10) : results,
+      more: paged && (matches.length > depth * 10 || (isAdmin && remote.more)),
+      orderStats,
       partial: remote.partial,
       remoteSummaries: isAdmin
         ? {
@@ -4177,6 +4393,32 @@ app.delete('/api/orders/:category/:remoteId', requireAuth, financialGuard, limit
 // ============================================================================
 // WEEKLY SETTLEMENTS & TRANSACTION LEDGER
 // ============================================================================
+// Slice after authorization and filtering. An existing row anchors the next batch
+// even when another request inserts newer records at the head of a list.
+function listPage(req, lists) {
+  if (req.query.paged !== '1') return lists;
+  const result = { pageInfo: {} };
+  for (const [key, rows] of Object.entries(lists)) {
+    if (req.query.only && req.query.only !== key) continue;
+    let start = 0;
+    if (req.query.after) {
+      const index = rows.findIndex(row => String(row.id ?? row.suid) === req.query.after);
+      if (index === -1) {
+        result.pageInfo[key] = { total: rows.length, expired: true };
+        result[key] = [];
+        continue;
+      }
+      start = index + 1;
+    }
+    const keep = Math.floor(Number(req.query['keep_' + key]) || 10);
+    const size = req.query.only ? 10 : Math.max(10, Math.min(rows.length, Math.min(500, keep)));
+    const items = rows.slice(start, start + size);
+    result[key] = items;
+    result.pageInfo[key] = { total: rows.length, more: start + items.length < rows.length };
+  }
+  return result;
+}
+
 app.get('/api/settlements', requireAuth, async (req, res) => {
   try {
     const user = req.user;
@@ -4187,6 +4429,10 @@ app.get('/api/settlements', requireAuth, async (req, res) => {
     }
     const weekStart = String(req.query.week_start || getCurrentMondayStr());
 
+    if (req.query.paged === '1' && req.query.only === 'transactions') {
+      const rows = isAdmin ? db.transactions : db.transactions.filter(t => t.userId === user.id);
+      return res.json({ success: true, ...listPage(req, { transactions: rows }) });
+    }
     if (isAdmin) {
       const hnSettle = await hnApiCall(`/api/seller-settlements?week_start=${encodeURIComponent(weekStart)}`, 'GET', null, true, 5500).catch(
         () => ({ data: null })
@@ -4195,13 +4441,12 @@ app.get('/api/settlements', requireAuth, async (req, res) => {
         success: true,
         mode: 'admin',
         weekStart,
-        hnSettlement: hnSettle?.data || null,
-        localOrders: db.localOrders,
-        transactions: db.transactions.slice(0, 100),
+        hnSettlement: req.query.paged === '1' ? { weekly_limit: hnSettle?.data?.weekly_limit } : hnSettle?.data || null,
+        ...(req.query.paged === '1' ? listPage(req, { transactions: db.transactions }) : { localOrders: db.localOrders, transactions: db.transactions.slice(0, 100) }),
       });
     } else {
       const myOrders = db.localOrders.filter((o) => o.status !== 'cancelled' && o.placedBy?.id === user.id);
-      const myTrx = db.transactions.filter((t) => t.userId === user.id).slice(0, 100);
+      const myTrx = db.transactions.filter((t) => t.userId === user.id);
       const totalSpent = Math.max(0, -db.transactions.filter(t => t.userId === user.id && ['order_debit', 'order_hold', 'order_release', 'order_refund'].includes(t.type)).reduce((sum, t) => sum + Number(t.amount || 0), 0));
       res.json({
         success: true,
@@ -4212,8 +4457,9 @@ app.get('/api/settlements', requireAuth, async (req, res) => {
           totalSpent,
           currentBalance: user.balance,
         },
-        orders: myOrders.map(order => publicOrder({ ...order, note: null }, false)),
-        transactions: myTrx,
+        ...(req.query.paged === '1' ? listPage(req, { transactions: myTrx }) : {
+          orders: myOrders.map(order => publicOrder({ ...order, note: null }, false)), transactions: myTrx.slice(0, 100),
+        }),
       });
     }
   } catch (err) {
@@ -4236,7 +4482,7 @@ function netOrderAmounts(order) {
 
 app.get('/api/admin/monitor', asyncRoute(async (req, res) => {
   const weekStart = getCurrentMondayStr();
-  const settlement = await hnApiCall(`/api/seller-settlements?week_start=${weekStart}`, 'GET', null, true, 4500).catch(() => null);
+  const settlement = req.query.only ? null : await hnApiCall(`/api/seller-settlements?week_start=${weekStart}`, 'GET', null, true, 4500).catch(() => null);
   const spent = settlement?.data?.weekly_limit?.spent;
   const sourceSpent = (typeof spent === 'number' || (typeof spent === 'string' && /^\d+$/.test(spent))) && Number.isSafeInteger(Number(spent)) && Number(spent) >= 0
     ? Number(spent) : null;
@@ -4262,10 +4508,12 @@ app.get('/api/admin/monitor', asyncRoute(async (req, res) => {
   const totalBalance = ctvs.reduce((sum, ctv) => sum + Number(ctv.balance || 0), 0);
   res.json({ success: true, storageHealthy,
     payment: { weekStart, sourceSpent, totalBalance, amount: sourceSpent === null ? null : sourceSpent + totalBalance },
-    ctvs,
-    intents: db.orderIntents.filter(i => ['processing', 'uncertain'].includes(i.status) || i.requiresReview).slice(0, 200),
-    cancellations: db.localOrders.filter(o => o.cancelRequested || o.refundPending).slice(0, 200),
-    events: db.auditLog.slice(0, 200),
+    ...listPage(req, {
+      ctvs,
+      intents: db.orderIntents.filter(i => ['processing', 'uncertain'].includes(i.status) || i.requiresReview),
+      cancellations: db.localOrders.filter(o => o.cancelRequested || o.refundPending),
+      events: req.query.paged === '1' ? db.auditLog : db.auditLog.slice(0, 200),
+    }),
   });
 }));
 
@@ -4303,9 +4551,17 @@ app.get('/api/admin/monitor/ctv/:id', (req, res) => {
     .reduce((sum, t) => sum + Number(t.amount || 0), 0);
 
   const ctvEvents = db.auditLog
-    .filter(e => e.actorId === ctv.id || e.details?.userId === ctv.id)
-    .slice(0, 200);
+    .filter(e => e.actorId === ctv.id || e.details?.userId === ctv.id);
 
+  const search = String(req.query.q || '').trim().toLowerCase();
+  const filtered = ctvOrders.filter(o => (!req.query.category || o.category === req.query.category) &&
+    (!search || [o.customer?.nickname, o.customer?.suid, o.remoteOrderId, o.id, o.summary].some(v => String(v ?? '').toLowerCase().includes(search))));
+  const page = req.query.paged === '1'
+    ? listPage(req, { orders: filtered, events: ctvEvents, transactions: ctvTransactions })
+    : { orders: filtered.slice(0, 300), events: ctvEvents.slice(0, 200), transactions: ctvTransactions.slice(0, 200) };
+  if (req.query.paged === '1' && req.query.tab && !req.query.only) {
+    for (const key of ['orders','events','transactions']) if (key !== req.query.tab) delete page[key];
+  }
   res.json({
     success: true,
     ctv: sanitizeUser(ctv),
@@ -4321,7 +4577,8 @@ app.get('/api/admin/monitor/ctv/:id', (req, res) => {
       totalTopup,
       lastOrderAt: ctvOrders[0]?.createdAt || null,
     },
-    orders: ctvOrders.slice(0, 300).map(o => ({
+    ...page,
+    orders: page.orders?.map(o => ({
       id: o.id,
       remoteOrderId: o.remoteOrderId,
       category: o.category,
@@ -4338,8 +4595,7 @@ app.get('/api/admin/monitor/ctv/:id', (req, res) => {
       trackUrl: o.weather?.trackUrl || null,
       createdAt: o.createdAt,
     })),
-    transactions: ctvTransactions.slice(0, 200),
-    events: ctvEvents,
+
   });
 });
 
@@ -4469,6 +4725,10 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
   const ctvList = db.users.filter(u => u.role === 'ctv').map(u => ({
     ...sanitizeUser(u), totalOrders: 0, totalSpent: 0, totalProfit: 0,
   }));
+  if (req.query.selected) {
+    const index = ctvList.findIndex(u => u.id === req.query.selected);
+    if (index > 0) ctvList.unshift(...ctvList.splice(index, 1));
+  }
   const ctvById = new Map(ctvList.map(ctv => [ctv.id, ctv]));
   let ctvRevenue = 0;
   let ctvProfit = 0;
@@ -4492,6 +4752,9 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
 
   const totalLocalOrders = db.localOrders.length;
   const totalProfit = totalRevenue - totalCost;
+  if (req.query.paged === '1' && req.query.only === 'ctvs') {
+    return res.json({ success: true, ...listPage(req, { ctvs: ctvList }) });
+  }
   const totalCtvBalance = ctvList.reduce((s, u) => s + Number(u.balance || 0), 0);
 
   res.json({
@@ -4538,8 +4801,8 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
       totalCtvBalance,
       totalTransactions: db.transactions.length,
     },
-    ctvs: ctvList,
-    transactions: db.transactions.slice(0, 80),
+    ...listPage(req, { ctvs: ctvList }),
+    transactions: req.query.paged === '1' ? undefined : db.transactions.slice(0, 80),
   });
 });
 
@@ -5092,27 +5355,9 @@ const httpServer = app.listen(PORT, HOST, async () => {
   try {
     await hnApiCall('/api/settings?keys=is_send_task', 'GET', null, true, 5500);
     console.log('HoanNguyen API verified via HTTPS.');
-    // Pre-warm catalog cache in background so first login/page load is instant.
-    fetchRawCatalogFromHoanNguyen(true).then(() => {
-      console.log('HoanNguyen catalog pre-warmed.');
-    }).catch(() => {});
   } catch (err) {
     console.warn('Initial HoanNguyen login warning:', err.message);
   }
-  // Background sync: 1 min when Admin is active, 10 min when only CTVs are active (prevents lag & upstream spam).
-  const refreshTimer = setInterval(() => {
-    if (catalogPromise) return;
-    const now = Date.now();
-    const age = now - catalogCache.timestamp;
-    const adminActive = now - lastAdminActivityAt <= 3 * 60 * 1000;
-    const ctvActive = now - lastCtvActivityAt <= 15 * 60 * 1000;
-    if (adminActive && age >= ADMIN_CATALOG_FRESH_MS) {
-      fetchRawCatalogFromHoanNguyen(true).catch(() => {});
-    } else if (ctvActive && age >= CTV_CATALOG_FRESH_MS) {
-      fetchRawCatalogFromHoanNguyen(true).catch(() => {});
-    }
-  }, 30000);
-  if (typeof refreshTimer.unref === 'function') refreshTimer.unref();
 });
 
 // Slowloris & HTTP socket flood protection

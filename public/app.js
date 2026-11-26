@@ -42,6 +42,7 @@ const state = {
   adminMonitor: null,
   pricingCtvId: '',
   pricingCatalog: null,
+  pricingLoading: false,
   pricingLoadError: '',
   adminPricingTab: 'categories', // 'categories' | 'packages' | 'fruits'
   adminPkgCatFilter: 'all',
@@ -59,6 +60,7 @@ const state = {
     min_coin_filter: 400000,
 
     fruit_item_id: 1,
+    fruitSearch: '',
     fruit_total_cnt: 10,
     fruit_variant_mode: 'regular', // 'regular' | 'specify'
     fruit_mutation_list: [],
@@ -75,7 +77,7 @@ const state = {
 localStorage.removeItem('ebongiu_token');
 
 const { renderIdentityToolsHtml, bindIdentityToolsEvents, loadIdentityClientStatus, loadAdminMonitor, renderAdminMonitorHtml, bindAdminMonitorEvents } =
-  createToolViews({ state, apiFetch, createRequestKey, escapeHtml, showToast, formatVnd, formatDateVi, renderCurrentView, loadOrders });
+  createToolViews({ state, apiFetch, moreButton, bindMore, createRequestKey, escapeHtml, showToast, formatVnd, formatDateVi, renderCurrentView, loadOrders });
 
 function createRequestKey() {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
@@ -214,7 +216,76 @@ async function apiFetch(url, method = 'GET', body = null, timeoutMs = 0) {
   if (!res.ok && !data.needs_confirmation) {
     throw Object.assign(new Error(data.message || `Lỗi kết nối (${res.status})`), { code: data.code, status: res.status });
   }
+  if (data.pageInfo) data.listUrl = data.nextPath || url;
   return data;
+}
+
+function moreButton(data, key, label = 'Xem thêm', cls = 'list-more') {
+  const info = data?.pageInfo?.[key];
+  const rows = (data?.catalog || data)?.[key];
+  if (!info?.more || !Array.isArray(rows) || !rows.length) return '';
+  const total = Number(info.total);
+  const text = Number.isFinite(total) && total > rows.length ? `${label} (${rows.length}/${total})` : label;
+  return `<button type="button" class="btn-frost ${cls}" data-more-key="${escapeHtml(key)}">${escapeHtml(text)}</button>`;
+}
+
+function bindMore(root, data, redraw) {
+  if (!root || !data) return;
+  root.querySelectorAll('[data-more-key]').forEach(btn => {
+    const key = btn.dataset.moreKey;
+    if (!data.pageInfo?.[key] || btn.dataset.boundMore) return;
+    btn.dataset.boundMore = '1';
+    btn.addEventListener('click', async () => {
+      if (btn.disabled) return;
+      const collection = data.catalog || data;
+      const rows = collection?.[key];
+      const baseUrl = data.listUrls?.[key] || data.listUrl;
+      if (!Array.isArray(rows) || !baseUrl) return;
+      const info = data.pageInfo[key];
+      const origText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Đang tải…';
+      const [path, query = ''] = String(baseUrl).split('?');
+      const qs = new URLSearchParams(query);
+      qs.delete('refresh');
+      for (const k of Array.from(qs.keys())) {
+        if (k.startsWith('keep_')) qs.delete(k);
+      }
+      qs.set('only', key);
+      if (info.nextPage) {
+        qs.set('page', String(info.nextPage));
+      } else {
+        const last = rows.at(-1);
+        const cursor = last?.id ?? last?.suid;
+        if (cursor == null) {
+          btn.disabled = false;
+          btn.textContent = origText;
+          return;
+        }
+        qs.set('after', String(cursor));
+      }
+      if (data.catalog && key !== 'pricing_packages') qs.set('scope', key === 'weather_buff_types' ? 'weather_buff' : key);
+      try {
+        const next = await apiFetch(path + '?' + qs, 'GET', null, 7000);
+        if (!btn.isConnected) return;
+        const nextInfo = next.pageInfo?.[key];
+        if (!nextInfo) throw new Error('Không tải được thêm dữ liệu. Vui lòng thử lại.');
+        if (nextInfo.expired) throw new Error('Danh sách vừa thay đổi. Hãy làm mới để tiếp tục.');
+        if (data.catalog) expandCompactFruitMutations(next, data.mutations);
+        const nextRows = Array.isArray((next.catalog || next)?.[key]) ? (next.catalog || next)[key] : [];
+        const seen = new Set(rows.map(row => row.id ?? row.suid));
+        rows.push(...nextRows.filter(row => !seen.has(row.id ?? row.suid)));
+        data.pageInfo[key] = nextInfo;
+        redraw();
+      } catch (err) { showToast(err.message); }
+      finally {
+        if (btn.isConnected) {
+          btn.disabled = false;
+          btn.textContent = origText;
+        }
+      }
+    });
+  });
 }
 
 function setCtvMaintenanceOverlay(active, message = 'Hệ thống ebongiu đang bảo trì') {
@@ -305,9 +376,16 @@ function clearAuthState() {
   state.lastFullPricingVersion = null;
   state.pricingCtvId = '';
   state.pricingCatalog = null;
+  state.pricingLoading = false;
   state.pricingLoadError = '';
   state.catalogWarning = '';
   state.ordersWarning = '';
+  state.ordersMore = false;
+  state.ordersDepth = 1;
+  state.orderStats = null;
+  state.orderSearch = '';
+  state.orderActiveFilter = 'all';
+  state.orderProgressFilter = 'all';
   state.loadingCatalog = false;
   state.loadingOrders = false;
   state.lastOrdersSig = '';
@@ -327,6 +405,7 @@ function clearAuthState() {
   state.seenUpdateVersion = null;
   state.currentView = 'fruit_coin';
   state.modalOrder.customer = null;
+  state.modalOrder.fruitSearch = '';
   state.modalOrder.fruit_preview_admin = null;
   localStorage.removeItem('ebongiu_token');
   sessionStorage.removeItem('ebongiu_token');
@@ -339,27 +418,16 @@ function clearAuthState() {
   if (modalBody) modalBody.innerHTML = '';
   const adminSection = document.getElementById('sidebarAdminSection');
   if (adminSection) adminSection.style.display = 'none';
+  const badge = document.getElementById('sidebarActiveOrdersCount');
+  if (badge) badge.hidden = true;
 }
 
-function hydrateCachedCatalog() {
-  // Always load fresh prices from server RAM (<5ms) so CTV never sees outdated prices after Admin edits.
-  return false;
-}
-
-function saveCachedCatalog(data) {
-  if (!state.user || !data) return;
-  try {
-    sessionStorage.setItem('ebongiu_catalog_cache', JSON.stringify({
-      userId: state.user.id,
-      role: state.user.role,
-      cachedAt: Date.now(),
-      data,
-    }));
-  } catch {}
+function catalogSummaryScope() {
+  return state.user?.role === 'admin' ? 'admin_summary' : 'summary';
 }
 
 function isUserTypingOrModalOpen() {
-  if (state.currentView === 'admin_pricing' && document.querySelector?.('[data-cat-card][data-dirty="1"]')) return true;
+  if (state.currentView === 'admin_pricing' && document.querySelector?.('[data-dirty="1"]')) return true;
   const modal = document.getElementById('appModalOverlay');
   if (modal && modal.style.display !== 'none') return true;
   const active = typeof document !== 'undefined' ? document.activeElement : null;
@@ -369,9 +437,9 @@ function isUserTypingOrModalOpen() {
 
 async function loadInitialAppData() {
   if (!state.user) return;
-  hydrateCachedCatalog();
+
   renderCurrentView();
-  const catTask = loadCatalog(false).then(() => {
+  const catTask = loadCatalog(false, catalogSummaryScope()).then(() => {
     if (state.user && !isUserTypingOrModalOpen()) renderCurrentView();
   });
   const ordTask = loadOrders(false).then(() => {
@@ -533,12 +601,12 @@ function expandCompactFruitMutations(data, fallbackMutations = null) {
   }
 }
 
-async function loadCatalog(forceRefresh = false, scope = '', timeoutMs = 6500) {
+async function loadCatalog(forceRefresh = false, scope = '', timeoutMs = 6500, options = {}) {
   if (!state.user) return false;
   const requestToken = state.token;
   state.loadingCatalog = true;
   try {
-    const qs = new URLSearchParams();
+    const qs = new URLSearchParams({ paged: '1', ...options });
     if (forceRefresh) qs.set('refresh', '1');
     if (scope) qs.set('scope', scope);
     if (state.user.role !== 'admin') qs.set('compact', '1');
@@ -548,10 +616,16 @@ async function loadCatalog(forceRefresh = false, scope = '', timeoutMs = 6500) {
 
     const prev = state.catalogData;
     if (prev && r.pricingVersion < prev.pricingVersion) return false;
-    if (!r.partialScope) state.lastFullPricingVersion = r.pricingVersion;
+    r.listUrls = Object.fromEntries(Object.keys(r.pageInfo || {}).map(k => [k, url]));
+    if (!r.partialScope || r.partialScope.endsWith('summary')) state.lastFullPricingVersion = r.pricingVersion;
     const merged = r.partialScope && prev
       ? {
           ...prev,
+          listUrls: { ...prev.listUrls, ...r.listUrls },
+          pageInfo: { ...prev.pageInfo, ...r.pageInfo },
+          weeklyLimit: r.weeklyLimit ?? prev.weeklyLimit,
+          processingRates: r.processingRates ?? prev.processingRates,
+          totalFruitStock: r.totalFruitStock ?? prev.totalFruitStock,
           syncedAt: r.syncedAt || prev.syncedAt,
           pricingVersion: r.pricingVersion ?? prev.pricingVersion,
           fruitOrderFee: r.fruitOrderFee ?? prev.fruitOrderFee,
@@ -590,7 +664,7 @@ async function loadCatalog(forceRefresh = false, scope = '', timeoutMs = 6500) {
     if (!state.lastScopeSyncAt) state.lastScopeSyncAt = {};
     if (scope) state.lastScopeSyncAt[scope] = Date.now();
     else state.lastScopeSyncAt.all = Date.now();
-    saveCachedCatalog(merged);
+
     applyCatalogSideEffects(merged);
     return changed;
   } catch (err) {
@@ -608,13 +682,25 @@ async function loadCatalog(forceRefresh = false, scope = '', timeoutMs = 6500) {
 // ============================================================================
 // LOAD ORDERS & ADMIN OVERVIEW
 // ============================================================================
-async function loadOrders(forceRefresh = false, timeoutMs = 6500) {
+let orderRequestVersion = 0;
+async function loadOrders(forceRefresh = false, timeoutMs = 6500, options = {}) {
   if (!state.user) return false;
   const requestToken = state.token;
+  const view = state.currentView;
+  if (!ORDER_VIEWS.includes(view) && !['order_history', 'dashboard'].includes(view)) return false;
+  const version = ++orderRequestVersion;
+  if (forceRefresh && !options.keepDepth) state.ordersDepth = 1;
+  const category = view === 'fruit_coin' ? 'fruit_all' : ORDER_VIEWS.includes(view) ? view : 'all';
+  const qs = new URLSearchParams({ category, paged: '1', depth: String(state.ordersDepth || 1) });
+  if (forceRefresh) qs.set('refresh', '1');
+  if (view !== 'dashboard' && state.orderSearch.trim()) qs.set('q', state.orderSearch.trim());
+  if (ORDER_VIEWS.includes(view)) { qs.set('active', state.orderActiveFilter); qs.set('progress', state.orderProgressFilter); }
   state.loadingOrders = true;
   try {
-    const r = await apiFetch(`/api/orders?category=all${forceRefresh ? '&refresh=1' : ''}`, 'GET', null, timeoutMs);
-    if (r.success && state.token === requestToken) {
+    const r = await apiFetch('/api/orders?' + qs, 'GET', null, timeoutMs);
+    if (r.success && version === orderRequestVersion && state.currentView === view && state.token === requestToken) {
+      state.ordersMore = !!r.more;
+      state.orderStats = r.orderStats || null;
       const nextOrders = r.orders || [];
       const sig = `${nextOrders.length}:${nextOrders.map(o => `${o.id}:${o.status}:${o.isActive}:${o.completedCnt}:${o.sendingCnt}:${o.failedCnt}:${o.cancelRequested ? 1 : 0}:${o.weatherDeleteAt || ''}`).join('|')}`;
       const changed = sig !== state.lastOrdersSig;
@@ -622,15 +708,15 @@ async function loadOrders(forceRefresh = false, timeoutMs = 6500) {
       state.orders = nextOrders;
       state.remoteSummaries = r.remoteSummaries || {};
       state.ordersWarning = r.partial ? 'Một phần danh sách đơn chưa đồng bộ được với nguồn.' : '';
-      const activeCount = state.orders.filter((o) => o.status !== 'completed' && o.isActive).length;
+      const activeCount = state.orderStats?.active_orders ?? state.orders.filter((o) => o.status !== 'completed' && o.isActive).length;
       const badge = document.getElementById('sidebarActiveOrdersCount');
-      if (badge) badge.textContent = String(activeCount);
+      if (badge) { badge.hidden = category !== 'all'; badge.textContent = String(activeCount) + (state.orderStats?.partial ? '+' : ''); }
       return changed;
     }
   } catch (err) {
-    if (state.token === requestToken) state.ordersWarning = 'Chưa cập nhật được danh sách đơn.';
+    if (state.token === requestToken && version === orderRequestVersion) state.ordersWarning = 'Chưa cập nhật được danh sách đơn.';
   } finally {
-    if (state.token === requestToken) state.loadingOrders = false;
+    if (state.token === requestToken && version === orderRequestVersion) state.loadingOrders = false;
   }
   return false;
 }
@@ -641,7 +727,8 @@ async function loadAdminOverview() {
   const requestToken = state.token;
   const version = ++adminOverviewVersion;
   try {
-    const r = await apiFetch('/api/admin/overview');
+    const selected = state.currentView === 'admin_pricing' && state.pricingCtvId;
+    const r = await apiFetch('/api/admin/overview?paged=1' + (selected ? '&selected=' + encodeURIComponent(selected) : ''));
     if (r.success && version === adminOverviewVersion && state.token === requestToken && state.user?.role === 'admin') {
       state.adminOverview = r;
     }
@@ -668,6 +755,17 @@ function switchView(viewKey) {
     viewKey = 'fruit_coin';
   }
   state.currentView = viewKey;
+  state.ordersDepth = 1;
+  state.ordersMore = false;
+  state.orders = [];
+  state.orderStats = null;
+  state.remoteSummaries = {};
+  state.ordersWarning = '';
+  state.lastOrdersSig = '';
+  state.orderSearch = '';
+  state.orderActiveFilter = 'all';
+  state.orderProgressFilter = 'all';
+  if (viewKey === 'admin_monitor') { state.adminMonitor = null; state.adminMonitorCtvId = null; state.adminMonitorCtvDetail = null; }
   document.querySelectorAll('.sidebar-item[data-view]').forEach((btn) => {
     btn.classList.toggle('is-active', btn.dataset.view === viewKey);
   });
@@ -677,7 +775,7 @@ function switchView(viewKey) {
   }
   setMobileMenuOpen(false);
 
-  if (viewKey === 'admin_ctv' || (['admin_system', 'admin_pricing'].includes(viewKey) && !state.adminOverview)) {
+  if (viewKey === 'admin_ctv' || (viewKey === 'admin_system' && !state.adminOverview)) {
     const container = document.getElementById('mainViewContainer');
     container.textContent = 'Đang tải dữ liệu quản trị…';
     loadAdminOverview().then(loaded => {
@@ -686,6 +784,20 @@ function switchView(viewKey) {
       else container.textContent = 'Chưa tải được dữ liệu quản trị. Chọn lại mục này để thử lại.';
     });
     return;
+  }
+  if (viewKey === 'admin_pricing') {
+    state.pricingCatalog = null;
+    state.pricingLoading = true;
+    state.pricingLoadError = '';
+    renderCurrentView();
+    Promise.all([loadAdminOverview(), loadCtvPricing(state.pricingCtvId, false, { silent: true })]).then(() => {
+      if (state.currentView === viewKey && state.user?.role === 'admin') renderCurrentView();
+    });
+    return;
+  }
+  if (ORDER_VIEWS.includes(viewKey) || ['order_history','dashboard'].includes(viewKey)) {
+    loadOrders().then(() => { if (state.currentView === viewKey && state.user) renderCurrentView(); });
+    if (viewKey === 'dashboard') loadCatalog(false, 'fruit_all').then(() => { if (state.currentView === viewKey && state.user) renderCurrentView(); });
   }
   renderCurrentView();
   if (viewKey === 'identity_tools') loadIdentityClientStatus();
@@ -721,6 +833,7 @@ function renderCurrentView() {
   if (ORDER_VIEWS.includes(view)) {
     container.innerHTML = zeroBannerHtml + renderOrderCategoryPageHtml(view);
     bindOrderCategoryPageEvents(view);
+    bindMoreOrders(container);
   } else if (view === 'dashboard') {
     container.innerHTML = zeroBannerHtml + renderDashboardOverviewHtml();
     bindDashboardEvents();
@@ -730,6 +843,7 @@ function renderCurrentView() {
   } else if (view === 'order_history') {
     container.innerHTML = zeroBannerHtml + renderOrderHistoryHtml();
     bindOrderHistoryEvents();
+    bindMoreOrders(container);
   } else if (view === 'identity_tools') {
     container.innerHTML = zeroBannerHtml + renderIdentityToolsHtml();
     bindIdentityToolsEvents();
@@ -775,7 +889,7 @@ function renderOrderCategoryPageHtml(catKey) {
   );
 
   // Admin uses HoanNguyen's live summary totals when available so numbers match source 100%.
-  const remSum = state.user?.role === 'admin' ? state.remoteSummaries?.[catKey] : null;
+  const remSum = (state.user?.role === 'admin' && state.remoteSummaries?.[catKey]) || state.orderStats;
 
   const totalOrders = remSum ? Number(remSum.total_orders ?? catOrders.length) : catOrders.length;
   const completedOrders = remSum ? Number(remSum.completed_orders ?? 0) : catOrders.filter((o) => o.status === 'completed').length;
@@ -860,6 +974,7 @@ function renderOrderCategoryPageHtml(catKey) {
         </button>
       </div>
 
+      ${remSum?.partial ? '<p class="tool-note">Các chỉ số tiến độ tính trên những đơn đã đồng bộ.</p>' : ''}
       <div class="stats-three-grid">
         <div class="stat-subcard">
           <div class="stat-subcard-head">
@@ -997,6 +1112,32 @@ function renderOrderCategoryPageHtml(catKey) {
   `;
 }
 
+function bindMoreOrders(container) {
+  const table = container?.querySelector?.('#catOrdersTbody, #histOrdersTbody')?.closest?.('.table-wrap');
+  if (!table) return;
+  if (table.nextElementSibling?.classList?.contains('list-more')) table.nextElementSibling.remove();
+  if (!state.ordersMore) return;
+  const loaded = state.orders.length;
+  const total = Number(state.orderStats?.total_orders || 0);
+  const label = loaded === 0
+    ? 'Xem thêm đơn từ nguồn'
+    : total > loaded && !state.orderSearch.trim() && state.orderActiveFilter === 'all' && state.orderProgressFilter === 'all'
+    ? `Xem thêm (${loaded}/${total}${state.orderStats?.partial ? '+' : ''})`
+    : 'Xem thêm';
+  table.insertAdjacentHTML('afterend', `<button class="btn-frost list-more" type="button">${escapeHtml(label)}</button>`);
+  const btn = table.nextElementSibling;
+  btn.onclick = async () => {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    btn.textContent = 'Đang tải…';
+    const depth = state.ordersDepth || 1;
+    state.ordersDepth = depth + 1;
+    await loadOrders();
+    if (state.ordersWarning && btn.isConnected) state.ordersDepth = depth;
+    if (btn.isConnected) renderCurrentView();
+  };
+}
+
 function getFilteredCatOrders(catKey) {
   const catOrders = state.orders.filter((o) =>
     catKey === 'fruit_coin'
@@ -1035,7 +1176,7 @@ function renderCatOrdersTbodyHtml(catKey) {
   return filteredOrders.map((o) => renderOrderTableRowHtml(o)).join('');
 }
 
-function renderOrderTableRowHtml(o) {
+function renderOrderTableRowHtml(o, isHistoryView = false) {
   const isAdmin = state.user?.role === 'admin';
   const pct =
     o.totalCnt > 0
@@ -1115,7 +1256,8 @@ function renderOrderTableRowHtml(o) {
     : `<span class="badge-tag">${escapeHtml(o.summary)}</span>`;
 
   const wbTrackUrl = isWeather ? String(o.weather?.trackUrl || '') : '';
-  const lastCellHtml = isWeather
+  const showWeatherLinkCell = isWeather && (!isHistoryView || isAdmin);
+  const lastCellHtml = showWeatherLinkCell
     ? `
       <td>
         <div style="display:flex;flex-direction:column;gap:5px;min-width:128px;">
@@ -1172,7 +1314,7 @@ function renderOrderTableRowHtml(o) {
         ${adminNote}
       </td>
       ${
-        isWeather
+        isWeather && !isHistoryView
           ? ''
           : `
             <td>
@@ -1204,7 +1346,7 @@ function bindOrderCategoryPageEvents(catKey) {
     if (btn) { btn.disabled = true; btn.textContent = '↻ Đang tải...'; }
     showToast('Đang đồng bộ dữ liệu mới nhất...');
     try {
-      const scope = state.user?.role === 'admin' ? '' : (catKey === 'fruit_coin' ? 'fruit_all' : catKey);
+      const scope = catalogSummaryScope();
       await Promise.all([loadCatalog(true, scope, 6500), loadOrders(true, 6500)]);
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = '↻ Làm mới'; }
@@ -1222,18 +1364,13 @@ function bindOrderCategoryPageEvents(catKey) {
     openCategoryPriceListModal(catKey);
   });
 
-  const updateTbodyOnly = () => {
-    const tbody = document.getElementById('catOrdersTbody');
-    if (!tbody) return;
-    tbody.innerHTML = renderCatOrdersTbodyHtml(catKey);
-    bindOrderRowActionButtons();
-  };
+  const updateTbodyOnly = () => refreshOrderFilter(catKey, 'catOrderSearchInput');
 
   const searchIn = document.getElementById('catOrderSearchInput');
   searchIn?.addEventListener('input', (e) => {
     state.orderSearch = e.target.value;
     if (catFilterTimer && typeof clearTimeout === 'function') clearTimeout(catFilterTimer);
-    catFilterTimer = setTimeout(updateTbodyOnly, 80);
+    catFilterTimer = setTimeout(updateTbodyOnly, 250);
   });
 
   document.getElementById('catOrderActiveSelect')?.addEventListener('change', (e) => {
@@ -1277,7 +1414,7 @@ function bindOrderRowActionButtons() {
       try {
         const res = await apiFetch(`/api/orders/${cat}/${remId}/toggle-active`, 'PUT');
         showToast(res.message || 'Đã cập nhật trạng thái đơn hàng');
-        await loadOrders(true);
+        await loadOrders(true, 6500, { keepDepth: true });
         renderCurrentView();
       } catch (err) {
         showToast(`Lỗi: ${err.message}`);
@@ -1427,7 +1564,7 @@ async function openCreateOrderModal(catKey, presetOptions = null) {
     presetOptions?.category === 'fruit_by_fruit' || presetOptions?.fruitOrderType === 'by_fruit'
       ? 'fruit_by_fruit'
       : catKey;
-  await loadCatalog(true, targetScope, 6500);
+  await loadCatalog(true, targetScope, 6500, presetOptions?.fruit_item_id ? { selected: String(presetOptions.fruit_item_id) } : {});
   if (mySeq !== createOrderModalSeq || overlay.style.display === 'none' || !state.user) return;
 
   const r = state.catalogData;
@@ -1449,6 +1586,7 @@ async function openCreateOrderModal(catKey, presetOptions = null) {
   state.modalOrder.requestSignature = null;
   state.modalOrder.quotedPrice = 0;
   state.modalOrder.fruitOrderType = presetOptions?.fruitOrderType || 'by_coin';
+  state.modalOrder.fruitSearch = '';
   if (presetOptions?.fruit_item_id) state.modalOrder.fruit_item_id = Number(presetOptions.fruit_item_id);
 
   const cat = r.catalog || {};
@@ -1494,6 +1632,9 @@ function renderCreateOrderModalBody() {
     const tiers = r.coinTiers || [];
     const fruits = catalog.fruit_by_fruit || [];
     const curFruit = fruits.find((f) => Number(f.id) === Number(state.modalOrder.fruit_item_id)) || fruits[0];
+    if (!isByCoin && curFruit && Number(state.modalOrder.fruit_item_id) !== Number(curFruit.id)) {
+      state.modalOrder.fruit_item_id = Number(curFruit.id);
+    }
     const availMuts = curFruit?.mutation_prices || [];
 
     categoryFormHtml = `
@@ -1553,9 +1694,12 @@ function renderCreateOrderModalBody() {
           : `
         <div class="fruit-order-fields">
           <div>
-            <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Chọn loại trái cây (${fruits.length} loại):</label>
+            <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Chọn loại trái cây (${r?.pageInfo?.fruit_by_fruit?.total ?? fruits.length} loại):</label>
+            <input type="search" id="modalFruitSearchInput" class="input-box" style="margin-bottom:8px;" placeholder="🔍 Tìm tên trái cây (VD: Nhân sâm)..." value="${escapeHtml(state.modalOrder.fruitSearch || '')}" />
             <select id="modalFruitItemSelect" class="input-box">
-              ${fruits
+              ${fruits.length === 0
+                ? '<option value="">Không tìm thấy trái cây phù hợp</option>'
+                : fruits
                 .map(
                   (f) => `
                 <option value="${f.id}" ${Number(f.id) === Number(curFruit?.id) ? 'selected' : ''}>
@@ -1565,6 +1709,7 @@ function renderCreateOrderModalBody() {
                 )
                 .join('')}
             </select>
+            ${moreButton(r, 'fruit_by_fruit', 'Xem thêm trái cây', 'list-more list-more-inline')}
           </div>
           <div>
             <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Số lượng trái:</label>
@@ -1770,6 +1915,7 @@ function renderCreateOrderModalBody() {
 
     <div style="display:flex;flex-direction:column;gap:12px;">
       ${categoryFormHtml}
+      ${catKey === 'fruit_by_fruit' ? '' : moreButton(r, catKey)}
     </div>
 
     <div style="background:#ffeff5;padding:14px 16px;border-radius:10px;box-shadow:var(--shadow-subtle);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
@@ -1786,10 +1932,12 @@ function renderCreateOrderModalBody() {
     </div>
   `;
 
+  bindMore(body, r, renderCreateOrderModalBody);
   bindCreateOrderModalEvents();
   updateCreateOrderModalPrice();
 }
 
+let modalFruitSearchTimer = null;
 function bindCreateOrderModalEvents() {
   const body = document.getElementById('appModalBody');
   if (!body) return;
@@ -1818,7 +1966,12 @@ function bindCreateOrderModalEvents() {
   });
 
   // Fruit Order Type Tabs (by_coin vs by_fruit)
-  body.querySelector('#modalTabByCoin')?.addEventListener('click', () => {
+  body.querySelector('#modalTabByCoin')?.addEventListener('click', async () => {
+    if (!state.catalogData?.catalog?.fruit_coin?.length) await loadCatalog(true, 'fruit_coin');
+    const coinList = state.catalogData?.catalog?.fruit_coin || [];
+    if (coinList.length && !coinList.some(p => Number(p.id) === Number(state.modalOrder.coin_price_package_id))) {
+      state.modalOrder.coin_price_package_id = coinList[0].id;
+    }
     state.modalOrder.fruitOrderType = 'by_coin';
     state.modalOrder.category = 'fruit_coin';
     renderCreateOrderModalBody();
@@ -1826,9 +1979,12 @@ function bindCreateOrderModalEvents() {
   body.querySelector('#modalTabByFruit')?.addEventListener('click', async () => {
     state.modalOrder.fruitOrderType = 'by_fruit';
     state.modalOrder.category = 'fruit_by_fruit';
+    state.modalOrder.fruitSearch = '';
     const lastFruitSync = state.lastScopeSyncAt?.fruit_by_fruit || 0;
     const hasFruits = (state.catalogData?.catalog?.fruit_by_fruit || []).length > 0;
-    if (!hasFruits || Date.now() - lastFruitSync > 30000) {
+    const fruitUrl = String(state.catalogData?.listUrls?.fruit_by_fruit || '');
+    const wasFiltered = /[?&](?:q|selected)=/.test(fruitUrl);
+    if (!hasFruits || wasFiltered || Date.now() - lastFruitSync > 30000) {
       body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá Trái cây từ ebongiu...', 'Đang lấy tồn kho & đơn giá trái cây mới nhất.');
       await loadCatalog(true, 'fruit_by_fruit', 6500);
       const overlay = document.getElementById('appModalOverlay');
@@ -1836,6 +1992,30 @@ function bindCreateOrderModalEvents() {
     }
     renderCreateOrderModalBody();
     triggerModalFruitPreview();
+  });
+
+  body.querySelector('#modalFruitSearchInput')?.addEventListener('input', (e) => {
+    const val = e.target.value;
+    state.modalOrder.fruitSearch = val;
+    if (modalFruitSearchTimer && typeof clearTimeout === 'function') clearTimeout(modalFruitSearchTimer);
+    modalFruitSearchTimer = setTimeout(async () => {
+      if (state.modalOrder.category !== 'fruit_by_fruit' || val !== state.modalOrder.fruitSearch) return;
+      const active = document.activeElement;
+      const hadFocus = active?.id === 'modalFruitSearchInput';
+      const pos = hadFocus ? active.selectionStart : null;
+      await loadCatalog(false, 'fruit_by_fruit', 6500, val.trim() ? { q: val.trim() } : {});
+      const overlay = document.getElementById('appModalOverlay');
+      if (!overlay || overlay.style.display === 'none' || state.modalOrder.category !== 'fruit_by_fruit' || val !== state.modalOrder.fruitSearch) return;
+      renderCreateOrderModalBody();
+      if (state.catalogData?.catalog?.fruit_by_fruit?.length) triggerModalFruitPreview();
+      if (hadFocus) {
+        const inp = document.getElementById('modalFruitSearchInput');
+        if (inp) {
+          inp.focus();
+          if (pos != null) { try { inp.setSelectionRange(pos, pos); } catch {} }
+        }
+      }
+    }, 250);
   });
 
   // Coin Package & Tier selection
@@ -2010,42 +2190,48 @@ async function runModalCustomerSearch() {
     statusEl.textContent = '⏳ Đang kết nối máy chủ Play Together tìm nhân vật...';
     resultsEl.innerHTML = '';
     try {
-      const r = await apiFetch('/api/customer/search-ingame', 'POST', { nickname: q });
-      const list = r.profiles || [];
-      statusEl.textContent = `Tìm thấy ${list.length} kết quả:`;
-      resultsEl.innerHTML = list
-        .map(
-          (p, i) => `
-          <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
-            <div>
-              <strong style="color:var(--color-pure-white);">${escapeHtml(p.Nickname)}</strong>
-              <span class="badge-tag violet" style="margin-left:6px;">${escapeHtml(p.RegionName || p.Region || 'VN')}</span>
-              <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(p.suid)} · ${escapeHtml(p.Online_Status || '')}</div>
+      const r = await apiFetch('/api/customer/search-ingame?paged=1', 'POST', { nickname: q });
+      const draw = () => {
+        const list = r.profiles || [];
+        const total = Number(r.pageInfo?.profiles?.total);
+        statusEl.textContent = Number.isFinite(total) && total > list.length ? `Hiển thị ${list.length}/${total} kết quả:` : `Tìm thấy ${list.length} kết quả:`;
+        resultsEl.innerHTML = list
+          .map(
+            (p, i) => `
+            <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
+              <div>
+                <strong style="color:var(--color-pure-white);">${escapeHtml(p.Nickname)}</strong>
+                <span class="badge-tag violet" style="margin-left:6px;">${escapeHtml(p.RegionName || p.Region || 'VN')}</span>
+                <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(p.suid)} · ${escapeHtml(p.Online_Status || '')}</div>
+              </div>
+              <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11px;" data-pick-ingame="${i}">Chọn</button>
             </div>
-            <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11px;" data-pick-ingame="${i}">Chọn</button>
-          </div>
-        `
-        )
-        .join('');
+          `
+          )
+          .join('');
 
-      resultsEl.querySelectorAll('[data-pick-ingame]').forEach((btn) => {
-        btn.addEventListener('click', async () => {
-          const prof = list[Number(btn.dataset.pickIngame)];
-          btn.disabled = true;
-          btn.textContent = 'Đang lưu...';
-          try {
-            const sel = await apiFetch('/api/customer/select-ingame', 'POST', { profile: prof });
-            if (sel.success && sel.customer) {
-              state.modalOrder.customer = sel.customer;
-              renderCreateOrderModalBody();
+        resultsEl.querySelectorAll('[data-pick-ingame]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            const prof = list[Number(btn.dataset.pickIngame)];
+            btn.disabled = true;
+            btn.textContent = 'Đang lưu...';
+            try {
+              const sel = await apiFetch('/api/customer/select-ingame', 'POST', { profile: prof });
+              if (sel.success && sel.customer) {
+                state.modalOrder.customer = sel.customer;
+                renderCreateOrderModalBody();
+              }
+            } catch (err) {
+              showToast(err.message);
+              btn.disabled = false;
+              btn.textContent = 'Chọn';
             }
-          } catch (err) {
-            showToast(err.message);
-            btn.disabled = false;
-            btn.textContent = 'Chọn';
-          }
+          });
         });
-      });
+        resultsEl.insertAdjacentHTML('beforeend', moreButton(r, 'profiles'));
+        bindMore(resultsEl, r, draw);
+      };
+      draw();
     } catch (err) {
       statusEl.textContent = `Lỗi: ${err.message}`;
     }
@@ -2067,38 +2253,44 @@ async function runModalCustomerSearch() {
   } else if (mode === 'saved') {
     statusEl.textContent = '⏳ Đang tải danh sách khách hàng...';
     try {
-      const r = await apiFetch(`/api/customer/saved?q=${encodeURIComponent(q)}`);
-      const list = r.customers || [];
-      statusEl.textContent = `Hiển thị ${list.length} khách hàng:`;
-      resultsEl.innerHTML = list
-        .map(
-          (c) => `
-          <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
-            <div>
-              <strong style="color:var(--color-pure-white);">${escapeHtml(c.nickname || `Khách #${c.id}`)}</strong>
-              <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(c.suid || '—')}</div>
+      const r = await apiFetch(`/api/customer/saved?paged=1&q=${encodeURIComponent(q)}`);
+      const draw = () => {
+        const list = r.customers || [];
+        const total = Number(r.pageInfo?.customers?.total);
+        statusEl.textContent = Number.isFinite(total) && total > list.length ? `Hiển thị ${list.length}/${total} khách hàng:` : `Hiển thị ${list.length} khách hàng:`;
+        resultsEl.innerHTML = list
+          .map(
+            (c) => `
+            <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
+              <div>
+                <strong style="color:var(--color-pure-white);">${escapeHtml(c.nickname || `Khách #${c.id}`)}</strong>
+                <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(c.suid || '—')}</div>
+              </div>
+              <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11px;" data-pick-saved="${c.id}">Chọn</button>
             </div>
-            <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11px;" data-pick-saved="${c.id}">Chọn</button>
-          </div>
-        `
-        )
-        .join('');
+          `
+          )
+          .join('');
 
-      resultsEl.querySelectorAll('[data-pick-saved]').forEach((btn) => {
-        btn.addEventListener('click', async () => {
-          btn.disabled = true;
-          try {
-            const det = await apiFetch(`/api/customer/saved/${btn.dataset.pickSaved}`);
-            if (det.success && det.customer) {
-              state.modalOrder.customer = det.customer;
-              renderCreateOrderModalBody();
+        resultsEl.querySelectorAll('[data-pick-saved]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            btn.disabled = true;
+            try {
+              const det = await apiFetch(`/api/customer/saved/${btn.dataset.pickSaved}`);
+              if (det.success && det.customer) {
+                state.modalOrder.customer = det.customer;
+                renderCreateOrderModalBody();
+              }
+            } catch (err) {
+              showToast(err.message);
+              btn.disabled = false;
             }
-          } catch (err) {
-            showToast(err.message);
-            btn.disabled = false;
-          }
+          });
         });
-      });
+        resultsEl.insertAdjacentHTML('beforeend', moreButton(r, 'customers'));
+        bindMore(resultsEl, r, draw);
+      };
+      draw();
     } catch (err) {
       statusEl.textContent = `Lỗi: ${err.message}`;
     }
@@ -2292,7 +2484,7 @@ function openWeatherSlotModal(order) {
         });
         showToast(res.message || 'Đã gán khách hàng thành công!');
         overlay.style.display = 'none';
-        await loadOrders(true);
+        await loadOrders(true, 6500, { keepDepth: true });
         renderCurrentView();
       } catch (err) {
         showToast(err.message);
@@ -2311,36 +2503,42 @@ function openWeatherSlotModal(order) {
         stEl.textContent = '⏳ Đang tìm nhân vật trong game...';
         resEl.innerHTML = '';
         try {
-          const r = await apiFetch('/api/customer/search-ingame', 'POST', { nickname: q });
-          const list = r.profiles || [];
-          stEl.textContent = `Tìm thấy ${list.length} nhân vật:`;
-          resEl.innerHTML = list.map((p, i) => `
-            <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
-              <div>
-                <strong style="color:var(--color-pure-white);">${escapeHtml(p.Nickname)}</strong>
-                <span class="badge-tag violet" style="margin-left:6px;">${escapeHtml(p.RegionName || p.Region || 'VN')}</span>
-                <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(p.suid)} · ${escapeHtml(p.Online_Status || '')}</div>
+          const r = await apiFetch('/api/customer/search-ingame?paged=1', 'POST', { nickname: q });
+          const draw = () => {
+            const list = r.profiles || [];
+            const total = Number(r.pageInfo?.profiles?.total);
+            stEl.textContent = Number.isFinite(total) && total > list.length ? `Hiển thị ${list.length}/${total} nhân vật:` : `Tìm thấy ${list.length} nhân vật:`;
+            resEl.innerHTML = list.map((p, i) => `
+              <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
+                <div>
+                  <strong style="color:var(--color-pure-white);">${escapeHtml(p.Nickname)}</strong>
+                  <span class="badge-tag violet" style="margin-left:6px;">${escapeHtml(p.RegionName || p.Region || 'VN')}</span>
+                  <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(p.suid)} · ${escapeHtml(p.Online_Status || '')}</div>
+                </div>
+                <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11px;" data-wb-pick-ingame="${i}">Gán khách</button>
               </div>
-              <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11px;" data-wb-pick-ingame="${i}">Gán khách</button>
-            </div>
-          `).join('');
-          resEl.querySelectorAll('[data-wb-pick-ingame]').forEach((b) => {
-            b.addEventListener('click', async () => {
-              const prof = list[Number(b.dataset.wbPickIngame)];
-              b.disabled = true;
-              b.textContent = 'Đang gán...';
-              try {
-                const sel = await apiFetch('/api/customer/select-ingame', 'POST', { profile: prof });
-                if (sel.success && sel.customer?.customerId) {
-                  await assignCustomerId(sel.customer.customerId);
+            `).join('');
+            resEl.querySelectorAll('[data-wb-pick-ingame]').forEach((b) => {
+              b.addEventListener('click', async () => {
+                const prof = list[Number(b.dataset.wbPickIngame)];
+                b.disabled = true;
+                b.textContent = 'Đang gán...';
+                try {
+                  const sel = await apiFetch('/api/customer/select-ingame', 'POST', { profile: prof });
+                  if (sel.success && sel.customer?.customerId) {
+                    await assignCustomerId(sel.customer.customerId);
+                  }
+                } catch (err) {
+                  showToast(err.message);
+                  b.disabled = false;
+                  b.textContent = 'Gán khách';
                 }
-              } catch (err) {
-                showToast(err.message);
-                b.disabled = false;
-                b.textContent = 'Gán khách';
-              }
+              });
             });
-          });
+            resEl.insertAdjacentHTML('beforeend', moreButton(r, 'profiles'));
+            bindMore(resEl, r, draw);
+          };
+          draw();
         } catch (err) {
           stEl.textContent = `Lỗi: ${err.message}`;
         }
@@ -2358,25 +2556,31 @@ function openWeatherSlotModal(order) {
       } else if (tab === 'saved') {
         stEl.textContent = '⏳ Đang tải danh sách khách hàng...';
         try {
-          const r = await apiFetch(`/api/customer/saved?q=${encodeURIComponent(q)}`);
-          const list = r.customers || [];
-          stEl.textContent = `Hiển thị ${list.length} khách hàng:`;
-          resEl.innerHTML = list.map((c) => `
-            <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
-              <div>
-                <strong style="color:var(--color-pure-white);">${escapeHtml(c.nickname || `Khách #${c.id}`)}</strong>
-                <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(c.suid || '—')}</div>
+          const r = await apiFetch(`/api/customer/saved?paged=1&q=${encodeURIComponent(q)}`);
+          const draw = () => {
+            const list = r.customers || [];
+            const total = Number(r.pageInfo?.customers?.total);
+            stEl.textContent = Number.isFinite(total) && total > list.length ? `Hiển thị ${list.length}/${total} khách hàng:` : `Hiển thị ${list.length} khách hàng:`;
+            resEl.innerHTML = list.map((c) => `
+              <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
+                <div>
+                  <strong style="color:var(--color-pure-white);">${escapeHtml(c.nickname || `Khách #${c.id}`)}</strong>
+                  <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(c.suid || '—')}</div>
+                </div>
+                <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11px;" data-wb-pick-saved="${c.id}">Gán khách</button>
               </div>
-              <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11px;" data-wb-pick-saved="${c.id}">Gán khách</button>
-            </div>
-          `).join('');
-          resEl.querySelectorAll('[data-wb-pick-saved]').forEach((b) => {
-            b.addEventListener('click', async () => {
-              b.disabled = true;
-              b.textContent = 'Đang gán...';
-              await assignCustomerId(Number(b.dataset.wbPickSaved));
+            `).join('');
+            resEl.querySelectorAll('[data-wb-pick-saved]').forEach((b) => {
+              b.addEventListener('click', async () => {
+                b.disabled = true;
+                b.textContent = 'Đang gán...';
+                await assignCustomerId(Number(b.dataset.wbPickSaved));
+              });
             });
-          });
+            resEl.insertAdjacentHTML('beforeend', moreButton(r, 'customers'));
+            bindMore(resEl, r, draw);
+          };
+          draw();
         } catch (err) {
           stEl.textContent = `Lỗi: ${err.message}`;
         }
@@ -2400,7 +2604,7 @@ function openWeatherSlotModal(order) {
         const res = await apiFetch(`/api/orders/weather_buff/${encodeURIComponent(remId)}/slots/0`, 'DELETE');
         showToast(res.message || 'Đã gỡ khách hàng khỏi đơn.');
         overlay.style.display = 'none';
-        await loadOrders(true);
+        await loadOrders(true, 6500, { keepDepth: true });
         renderCurrentView();
       } catch (err) {
         showToast(err.message);
@@ -2464,6 +2668,7 @@ async function openWeatherConfigModal(order) {
   let addQty = Math.max(1, pkgQty - draft.reduce((s, d) => s + d.quantity, 0));
 
   const renderConfigBody = () => {
+    const activeTypes = state.catalogData?.catalog?.weather_buff_types || [];
     const totalUsed = draft.reduce((s, d) => s + Number(d.quantity || 0), 0);
     const remaining = Math.max(0, pkgQty - totalUsed);
     const isOver = totalUsed > pkgQty;
@@ -2488,6 +2693,7 @@ async function openWeatherConfigModal(order) {
           <input type="number" id="wbAddQtyInput" class="input-box" min="1" max="${Math.max(1, remaining)}" value="${Math.max(1, addQty)}" />
           <button type="button" class="btn-violet" id="btnWbAddLine" ${remaining <= 0 ? 'disabled' : ''}>+ Thêm</button>
         </div>
+        ${moreButton(state.catalogData, 'weather_buff_types', 'Tải thêm loại thời tiết', 'list-more list-more-inline')}
         ${
           remaining > 0
             ? `<div style="display:flex;gap:6px;flex-wrap:wrap;">
@@ -2532,6 +2738,7 @@ async function openWeatherConfigModal(order) {
       </div>
     `;
 
+    bindMore(body, state.catalogData, renderConfigBody);
     body.querySelector('#wbTypeSelect')?.addEventListener('change', (e) => {
       selectedTypeId = Number(e.target.value);
     });
@@ -2593,7 +2800,7 @@ async function openWeatherConfigModal(order) {
         });
         showToast(res.message || 'Đã lưu cấu hình thời tiết!');
         overlay.style.display = 'none';
-        await loadOrders(true);
+        await loadOrders(true, 6500, { keepDepth: true });
         renderCurrentView();
       } catch (err) {
         showToast(err.message);
@@ -2632,29 +2839,39 @@ async function openFruitWarehouseModal() {
   const mySeq = ++infoModalSeq;
   box.className = 'modal-box wide';
   title.textContent = '📦 Kho Trái Cây Trực Tuyến';
-  body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ ebongiu...', 'Đang lấy tồn kho & đơn giá trái cây mới nhất từ hệ thống.');
   overlay.style.display = 'flex';
 
-  await loadCatalog(true, 'fruit_by_fruit', 6500);
-  if (mySeq !== infoModalSeq || overlay.style.display === 'none' || !state.user) return;
-  if (!state.catalogData || state.catalogWarning) {
-    renderModalSyncErrorHtml(body, openFruitWarehouseModal);
-    return;
-  }
-
-  const fruits = (state.catalogData.catalog?.fruit_by_fruit || [])
-    .slice()
-    .sort((a, b) => b.stock_quantity - a.stock_quantity);
-
-  body.innerHTML = `
-    <input type="text" id="whFruitFilterInput" class="input-box" placeholder="🔍 Tìm tên trái cây trong kho (${fruits.length} loại)..." />
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;max-height:420px;overflow-y:auto;padding:2px;" id="whFruitGrid"></div>
-  `;
-
+  body.innerHTML = '<input type="search" id="whFruitFilterInput" class="input-box" placeholder="🔍 Tìm tên trái cây trong kho..." /><div id="whFruitGrid" class="warehouse-grid"></div><div id="whFruitMore"></div>';
+  const input = body.querySelector('#whFruitFilterInput');
   const grid = body.querySelector('#whFruitGrid');
-  const renderList = (q = '') => {
-    const cq = q.trim().toLowerCase();
-    const list = cq ? fruits.filter((f) => f.name.toLowerCase().includes(cq)) : fruits;
+  const footer = body.querySelector('#whFruitMore');
+  let data, version = 0;
+  const fetchList = async (q = '') => {
+    const request = ++version;
+    if (!data) {
+      grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:24px;color:var(--color-fog-veil);">⏳ Đang tải tồn kho trái cây mới nhất...</div>';
+    }
+    try {
+      const params = new URLSearchParams({ paged: '1', scope: 'fruit_by_fruit', sort: 'stock', q });
+      if (state.user?.role !== 'admin') params.set('compact', '1');
+      if (!data) params.set('refresh', '1');
+      const response = await apiFetch('/api/catalog?' + params, 'GET', null, 6500);
+      if (version !== request || mySeq !== infoModalSeq || !grid.isConnected) return;
+      data = response;
+      if (input && response.pageInfo?.fruit_by_fruit?.total != null && !q.trim()) {
+        input.placeholder = `🔍 Tìm tên trái cây trong kho (${response.pageInfo.fruit_by_fruit.total} loại)...`;
+      }
+      renderList();
+    } catch (err) { if (request === version && grid.isConnected) grid.innerHTML = `<div style="grid-column:1/-1;color:#ab334a;padding:12px;">${escapeHtml(err.message)}</div>`; }
+  };
+  const renderList = () => {
+    const list = data?.catalog?.fruit_by_fruit || [];
+    footer.innerHTML = moreButton(data, 'fruit_by_fruit');
+    bindMore(footer, data, renderList);
+    if (list.length === 0) {
+      grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:24px;color:var(--color-fog-veil);">Không tìm thấy trái cây phù hợp.</div>';
+      return;
+    }
     grid.innerHTML = list
       .map(
         (f) => `
@@ -2683,12 +2900,12 @@ async function openFruitWarehouseModal() {
     });
   };
 
-  renderList('');
+  fetchList();
   let whTimer = null;
   body.querySelector('#whFruitFilterInput')?.addEventListener('input', (e) => {
     const val = e.target.value;
     if (whTimer && typeof clearTimeout === 'function') clearTimeout(whTimer);
-    whTimer = setTimeout(() => renderList(val), 80);
+    whTimer = setTimeout(() => fetchList(val), 200);
   });
 }
 
@@ -2748,7 +2965,7 @@ async function openCoinWarehouseModal() {
   `;
 }
 
-async function openCategoryPriceListModal(catKey) {
+async function openCategoryPriceListModal(catKey, append = false) {
   const overlay = document.getElementById('appModalOverlay');
   const box = document.getElementById('appModalBox');
   const title = document.getElementById('appModalTitle');
@@ -2758,10 +2975,11 @@ async function openCategoryPriceListModal(catKey) {
   const mySeq = ++infoModalSeq;
   box.className = 'modal-box';
   title.textContent = `🏷️ Bảng giá: ${VIEW_TITLES[catKey] || catKey}`;
-  body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ ebongiu...');
+  const prevScroll = append ? (body.querySelector('.price-list-scroll')?.scrollTop || 0) : 0;
+  if (!append) body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ ebongiu...');
   overlay.style.display = 'flex';
 
-  await loadCatalog(true, catKey, 6500);
+  if (!append) await loadCatalog(true, catKey, 6500);
   if (mySeq !== infoModalSeq || overlay.style.display === 'none' || !state.user) return;
   if (!state.catalogData || state.catalogWarning) {
     renderModalSyncErrorHtml(body, () => openCategoryPriceListModal(catKey));
@@ -2775,7 +2993,7 @@ async function openCategoryPriceListModal(catKey) {
     body.innerHTML = `<div style="color:var(--color-fog-veil);padding:16px 0;">Hiện chưa có gói giá nào đang mở bán cho danh mục này.</div>`;
   } else if (isGiftCat) {
     body.innerHTML = `
-      <div style="display:flex;flex-direction:column;gap:12px;max-height:440px;overflow-y:auto;">
+      <div class="price-list-scroll" style="display:flex;flex-direction:column;gap:12px;max-height:440px;overflow-y:auto;">
         ${items
           .map(
             (g) => `
@@ -2809,7 +3027,7 @@ async function openCategoryPriceListModal(catKey) {
     const unitMap = { fruit_coin: 'Xu', buff_tim: 'Tim', buff_sao: 'Sao', guestbook: 'Bài viết', weather_buff: 'Lần' };
     const unit = unitMap[catKey] || '';
     body.innerHTML = `
-      <div class="pkg-picker-list" style="max-height:420px;">
+      <div class="pkg-picker-list price-list-scroll" style="max-height:420px;">
         ${items
           .map(
             (p) => `
@@ -2829,6 +3047,12 @@ async function openCategoryPriceListModal(catKey) {
       </div>
     `;
   }
+  if (append && prevScroll > 0) {
+    const scroller = body.querySelector('.price-list-scroll');
+    if (scroller) scroller.scrollTop = prevScroll;
+  }
+  body.insertAdjacentHTML('beforeend', moreButton(state.catalogData, catKey));
+  bindMore(body, state.catalogData, () => openCategoryPriceListModal(catKey, true));
   overlay.style.display = 'flex';
 }
 
@@ -2839,8 +3063,8 @@ function renderDashboardOverviewHtml() {
   const r = state.catalogData;
   const st = r?.systemStatus || {};
   const coinQty = r?.coinStock?.quantity || 0;
-  const totalFruits = (r?.catalog?.fruit_by_fruit || []).reduce((s, f) => s + Number(f.stock_quantity || 0), 0);
-  const activeOrders = state.orders.filter((o) => o.status !== 'completed' && o.isActive).length;
+  const totalFruits = r?.totalFruitStock ?? (r?.catalog?.fruit_by_fruit || []).reduce((s, f) => s + Number(f.stock_quantity || 0), 0);
+  const activeOrders = state.orderStats?.active_orders ?? state.orders.filter((o) => o.status !== 'completed' && o.isActive).length;
 
   const catCards = [
     { key: 'farm_gift', icon: '🏪', name: 'Quà nông trại', working: st.farm_gift },
@@ -2863,7 +3087,7 @@ function renderDashboardOverviewHtml() {
       <div class="glass-panel">
         <div style="font-size:12px;color:var(--color-moon-mist);">Đơn hàng đang chạy</div>
         <div style="font-size:24px;font-weight:700;color:var(--color-pure-white);margin-top:6px;">${activeOrders} đơn đang bật</div>
-        <div style="font-size:12px;color:var(--color-fog-veil);margin-top:4px;">Tổng số đơn: ${state.orders.length} đơn</div>
+        <div style="font-size:12px;color:var(--color-fog-veil);margin-top:4px;">Tổng số đơn: ${state.orderStats?.total_orders ?? state.orders.length}${state.orderStats?.partial ? '+' : ''} đơn</div>
       </div>
 
       <div class="glass-panel">
@@ -2915,9 +3139,9 @@ function bindDashboardEvents() {
 // ============================================================================
 // 5. ĐỐI SOÁT TUẦN & LỊCH SỬ ĐƠN HÀNG & KHÁCH HÀNG
 // ============================================================================
-async function renderWeeklySettlementsView(container, zeroBannerHtml) {
+async function renderWeeklySettlementsView(container, zeroBannerHtml, previous = null) {
   try {
-    const r = await apiFetch('/api/settlements');
+    const r = previous || await apiFetch('/api/settlements?paged=1');
     if (state.currentView !== 'weekly_settlements') return;
     const isAdmin = state.user.role === 'admin';
     const trxList = r.transactions || [];
@@ -3012,6 +3236,8 @@ async function renderWeeklySettlementsView(container, zeroBannerHtml) {
         </div>
       </div>
     `;
+    container.lastElementChild.insertAdjacentHTML('beforeend', moreButton(r, 'transactions'));
+    bindMore(container, r, () => renderWeeklySettlementsView(container, zeroBannerHtml, r));
   } catch (err) {
     if (state.currentView !== 'weekly_settlements' || !state.user) return;
     container.innerHTML = `<div class="glass-panel">Lỗi tải đối soát: ${escapeHtml(err.message)}</div>`;
@@ -3023,7 +3249,7 @@ function renderOrderHistoryHtml() {
     ${state.ordersWarning ? `<p class="tool-warning" role="status">${escapeHtml(state.ordersWarning)}</p>` : ''}
     <div class="glass-panel">
       <div class="panel-title-row">
-        <span class="panel-title-text">📄 Toàn bộ Lịch sử đơn hàng (${state.orders.length} đơn)</span>
+        <span class="panel-title-text">📄 Toàn bộ Lịch sử đơn hàng (${state.orderStats?.total_orders ?? state.orders.length}${state.orderStats?.partial ? '+' : ''} đơn)</span>
         <input type="text" id="histSearchInput" class="input-box" style="max-width:280px;" placeholder="🔍 Tìm tên khách, mã đơn, SUID..." value="${escapeHtml(state.orderSearch)}" />
       </div>
       <div class="table-wrap">
@@ -3064,21 +3290,41 @@ function renderOrderHistoryTbodyHtml() {
   if (list.length === 0) {
     return `<tr><td colspan="${colSpan}" style="text-align:center;padding:28px;color:var(--color-fog-veil);">${state.loadingOrders ? '<span class="loading-inline"><span class="loading-dot"></span>Đang đồng bộ lịch sử đơn...</span>' : 'Không có dữ liệu'}</td></tr>`;
   }
-  return list.map((o) => renderOrderTableRowHtml(o)).join('');
+  return list.map((o) => renderOrderTableRowHtml(o, true)).join('');
 }
 
+async function refreshOrderFilter(view, inputId) {
+  if (state.currentView !== view) return;
+  state.ordersDepth = 1;
+  const search = state.orderSearch;
+  const activeFilter = state.orderActiveFilter;
+  const progressFilter = state.orderProgressFilter;
+  await loadOrders();
+  if (state.currentView !== view || state.orderSearch !== search || state.orderActiveFilter !== activeFilter || state.orderProgressFilter !== progressFilter) return;
+  const container = document.getElementById('mainViewContainer');
+  const tbody = view === 'order_history' ? document.getElementById('histOrdersTbody') : document.getElementById('catOrdersTbody');
+  if (tbody && container) {
+    tbody.innerHTML = view === 'order_history' ? renderOrderHistoryTbodyHtml() : renderCatOrdersTbodyHtml(view);
+    bindOrderRowActionButtons();
+    bindMoreOrders(container);
+    return;
+  }
+  const hadFocus = document.activeElement?.id === inputId;
+  const pos = document.activeElement?.selectionStart;
+  renderCurrentView();
+  if (hadFocus) {
+    const input = document.getElementById(inputId);
+    input?.focus();
+    if (pos != null) { try { input?.setSelectionRange(pos, pos); } catch {} }
+  }
+}
 let histFilterTimer = null;
 function bindOrderHistoryEvents() {
   const input = document.getElementById('histSearchInput');
   input?.addEventListener('input', (e) => {
     state.orderSearch = e.target.value;
     if (histFilterTimer && typeof clearTimeout === 'function') clearTimeout(histFilterTimer);
-    histFilterTimer = setTimeout(() => {
-      const tbody = document.getElementById('histOrdersTbody');
-      if (!tbody) return;
-      tbody.innerHTML = renderOrderHistoryTbodyHtml();
-      bindOrderRowActionButtons();
-    }, 80);
+    histFilterTimer = setTimeout(() => refreshOrderFilter('order_history', 'histSearchInput'), 200);
   });
   bindOrderRowActionButtons();
 }
@@ -3126,6 +3372,16 @@ function getCategorySampleItem(catKey, catalog) {
 }
 
 function getAllAdminFixedPackages(r) {
+  if (r?.catalog?.pricing_packages) {
+    const units = { fruit_coin: 'Xu', buff_tim: 'Tim', buff_sao: 'Sao', guestbook: 'Bài viết', weather_buff: 'Lần' };
+    return r.catalog.pricing_packages.map(({ id, category, giftName, pkg }) => ({
+      key: id, id: pkg.id, catKey: category, catLabel: VIEW_TITLES[category],
+      name: giftName ? giftName + ' × ' + formatNum(pkg.quantity) : 'Gói ' + formatNum(pkg.quantity || pkg.coin_quantity) + ' ' + units[category],
+      isOnSale: !!pkg.is_on_sale, costPrice: pkg._admin?.cost_effective ?? pkg.total_price,
+      costOriginal: pkg._admin?.cost_original ?? pkg.total_price, sellPrice: pkg.total_price,
+      profit: pkg._admin?.profit ?? 0, hasOverride: !!pkg._admin?.has_custom_override,
+    }));
+  }
   const fixedPackages = [];
   const pushPkgs = (arr, catKey, catLabel, unitLabel) => {
     for (const p of arr || []) {
@@ -3172,21 +3428,35 @@ function getAllAdminFixedPackages(r) {
 }
 
 function adminPricingCatalog() {
-  return state.pricingCtvId ? state.pricingCatalog : state.catalogData;
+  return state.pricingCatalog || (state.pricingCtvId || state.pricingLoading ? null : state.catalogData);
 }
 
 let pricingLoadVersion = 0;
-async function loadCtvPricing(ctvId, refresh = false) {
+async function loadCtvPricing(ctvId, refresh = false, { silent = false } = {}) {
   const version = ++pricingLoadVersion;
-  state.pricingCatalog = null;
+  state.pricingLoading = true;
   state.pricingLoadError = '';
-  if (state.currentView === 'admin_pricing') renderCurrentView();
-  if (!ctvId) return;
+  if (!silent) {
+    state.pricingCatalog = null;
+    if (state.currentView === 'admin_pricing') renderCurrentView();
+  }
   try {
-    const result = await apiFetch('/api/catalog?ctvId=' + encodeURIComponent(ctvId) + (refresh ? '&refresh=1' : ''), 'GET', null, 6500);
-    if (version === pricingLoadVersion && ctvId === state.pricingCtvId) state.pricingCatalog = result;
+    const qs = new URLSearchParams({ paged: '1', pricingTab: state.adminPricingTab, pkgCat: state.adminPkgCatFilter });
+    if (state.adminPricingTab === 'fruits') {
+      qs.set('scope', 'fruit_by_fruit');
+      qs.set('q', state.adminFruitSearch.trim());
+      if (state.adminFruitFilter === 'custom') qs.set('custom', '1');
+    }
+    if (ctvId) qs.set('ctvId', ctvId);
+    if (refresh) qs.set('refresh', '1');
+    const result = await apiFetch('/api/catalog?' + qs, 'GET', null, 6500);
+    if (version === pricingLoadVersion && ctvId === state.pricingCtvId) {
+      state.pricingCatalog = result;
+    }
   } catch (err) {
     if (version === pricingLoadVersion && ctvId === state.pricingCtvId) state.pricingLoadError = err.message;
+  } finally {
+    if (version === pricingLoadVersion) state.pricingLoading = false;
   }
   if (version === pricingLoadVersion && state.currentView === 'admin_pricing') renderCurrentView();
 }
@@ -3199,16 +3469,19 @@ function renderAdminPricingPageHtml() {
   const missingCtv = personal && !ctvs.some(u => u.id === state.pricingCtvId);
   const selector = `<div style="margin-bottom:16px;">
     <label for="pricingCtvSelect">Áp dụng bảng giá cho</label>
-    <select class="input-box" id="pricingCtvSelect" style="display:block;max-width:360px;margin-top:6px;">
-      <option value="">Bảng giá chung</option>
-      ${missingCtv ? '<option selected disabled>CTV không còn trong danh sách</option>' : ''}
-      ${ctvs.map(u => `<option value="${escapeHtml(u.id)}" ${u.id === state.pricingCtvId ? 'selected' : ''}>${escapeHtml(u.name)} (@${escapeHtml(u.username)})</option>`).join('')}
-    </select>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px;">
+      <select class="input-box" id="pricingCtvSelect" style="max-width:360px;">
+        <option value="">Bảng giá chung</option>
+        ${missingCtv ? '<option selected disabled>CTV không còn trong danh sách</option>' : ''}
+        ${ctvs.map(u => `<option value="${escapeHtml(u.id)}" ${u.id === state.pricingCtvId ? 'selected' : ''}>${escapeHtml(u.name)} (@${escapeHtml(u.username)})</option>`).join('')}
+      </select>
+      ${moreButton(adm, 'ctvs', 'Tải thêm CTV', 'list-more list-more-inline')}
+    </div>
   </div>`;
   if (missingCtv) return `<div class="glass-panel">${selector}</div>`;
-  if (personal && !r) {
-    return `<div class="glass-panel">${selector}<div role="status">${escapeHtml(state.pricingLoadError || 'Đang tải bảng giá CTV…')}</div>
-      ${state.pricingLoadError ? '<button type="button" class="btn-frost" id="btnRefreshAdminPricing">Thử lại</button>' : ''}</div>`;
+  if (state.pricingLoadError || (!r && (personal || state.pricingLoading))) {
+    return `<div class="glass-panel">${selector}<div role="status" class="tool-note">${escapeHtml(state.pricingLoadError || (personal ? 'Đang tải bảng giá CTV…' : 'Đang tải bảng giá sản phẩm…'))}</div>
+      ${state.pricingLoadError ? '<button type="button" class="btn-frost" id="btnRefreshAdminPricing" style="margin-top:10px;">Thử lại</button>' : ''}</div>`;
   }
   const fruits = r?.catalog?.fruit_by_fruit || [];
   const defaultFruitMarkup = adm?.settings?.defaultFruitUnitMarkup ?? 40;
@@ -3216,7 +3489,7 @@ function renderAdminPricingPageHtml() {
   const modes = adm?.settings?.categoryMarkupModes || {};
   const percents = adm?.settings?.categoryMarkupPercents || {};
   const pkgOverrides = adm?.settings?.packagePriceOverrides || {};
-  const fruitOverrideCount = personal ? fruits.filter(f => f._admin?.has_custom_override).length : Object.keys(adm?.settings?.fruitUnitPrices || {}).length;
+  const fruitOverrideCount = r?.fruitCounts?.custom ?? (personal ? fruits.filter(f => f._admin?.has_custom_override).length : Object.keys(adm?.settings?.fruitUnitPrices || {}).length);
   const sysStatus = r?.systemStatus || {};
 
   const fixedPackages = getAllAdminFixedPackages(r);
@@ -3237,8 +3510,9 @@ function renderAdminPricingPageHtml() {
     ? new Date(r.syncedAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     : 'Chưa đồng bộ';
 
-  const pkgCatCounts = { all: fixedPackages.length };
-  for (const p of fixedPackages) pkgCatCounts[p.catKey] = (pkgCatCounts[p.catKey] || 0) + 1;
+  const pkgCatCounts = { ...r?.packageCounts };
+  if (!r?.packageCounts) for (const p of fixedPackages) pkgCatCounts[p.catKey] = (pkgCatCounts[p.catKey] || 0) + 1;
+  pkgCatCounts.all = Object.values(pkgCatCounts).reduce((sum, n) => sum + n, 0);
 
   return `
     <div class="glass-panel">
@@ -3264,10 +3538,10 @@ function renderAdminPricingPageHtml() {
           ⚙️ 1. Chỉnh giá từng Danh mục (VNĐ / %) — 8 danh mục
         </button>
         <button type="button" class="btn-frost ${state.adminPricingTab === 'packages' ? 'is-active' : ''}" data-adm-ptab="packages">
-          📦 2. Chỉnh từng Gói cố định (${fixedPackages.length} gói)
+          📦 2. Chỉnh từng gói cố định${r?.packageCounts ? ` (${pkgCatCounts.all} gói)` : ''}
         </button>
         <button type="button" class="btn-frost ${state.adminPricingTab === 'fruits' ? 'is-active' : ''}" data-adm-ptab="fruits">
-          🍎 3. Chỉnh từng loại Trái cây & 19 Đột biến (${fruits.length} loại)
+          🍎 3. Chỉnh từng loại Trái cây & 19 Đột biến${(r?.fruitCounts?.all ?? (state.adminPricingTab === 'fruits' ? r?.pageInfo?.fruit_by_fruit?.total : null)) != null ? ` (${r?.fruitCounts?.all ?? r?.pageInfo?.fruit_by_fruit?.total} loại)` : ''}
         </button>
       </div>
 
@@ -3482,7 +3756,7 @@ function renderAdminPricingPageHtml() {
           </div>`}
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <select id="admFruitFilterSelect" class="input-box" style="width:auto;">
-              <option value="all" ${state.adminFruitFilter === 'all' ? 'selected' : ''}>Tất cả (${fruits.length})</option>
+              <option value="all" ${state.adminFruitFilter === 'all' ? 'selected' : ''}>Tất cả (${r?.fruitCounts?.all ?? fruits.length})</option>
               <option value="custom" ${state.adminFruitFilter === 'custom' ? 'selected' : ''}>Đang đặt giá riêng (${fruitOverrideCount})</option>
             </select>
             <input type="text" id="admFruitSearchInput" class="input-box" style="width:230px;" placeholder="🔍 Tìm trái cây: Nhân sâm..." value="${escapeHtml(state.adminFruitSearch)}" />
@@ -3508,6 +3782,7 @@ function renderAdminPricingPageHtml() {
         </div>
       `
       }
+      ${moreButton(r, state.adminPricingTab === 'fruits' ? 'fruit_by_fruit' : 'pricing_packages')}
     </div>
   `;
 }
@@ -3587,7 +3862,7 @@ async function savePricingSettingsAndReload(payload, successMsg) {
   }
   const r = await apiFetch('/api/admin/settings', 'PUT', payload);
   showToast(successMsg || r.message || 'Đã cập nhật bảng giá thành công!');
-  await Promise.all([loadCatalog(true), loadAdminOverview()]);
+  await Promise.all([loadCtvPricing('', true), loadAdminOverview()]);
   renderCurrentView();
 }
 
@@ -3713,8 +3988,23 @@ function buildCategoryPayload(catKey) {
   return payload;
 }
 
+function renderPricingKeepingDrafts() {
+  const inputs = Array.from(document.querySelectorAll('input[data-dirty="1"], [data-cat-card][data-dirty="1"] input'));
+  const drafts = inputs.map(input => ({
+    id: input.id, pkg: input.dataset.pkgKey, fruit: input.dataset.fruitId, value: input.value
+  }));
+  renderCurrentView();
+  for (const draft of drafts) {
+    const input = draft.id ? document.getElementById(draft.id) : Array.from(document.querySelectorAll('.adm-pkg-override-input, .adm-fruit-unit-input'))
+      .find(el => draft.pkg ? el.dataset.pkgKey === draft.pkg : draft.fruit && el.dataset.fruitId === draft.fruit);
+    if (input) { input.value = draft.value; input.dispatchEvent(new Event('input', { bubbles: true })); }
+  }
+}
+
 let admFruitSearchTimer = null;
 function bindAdminPricingEvents() {
+  bindMore(document.getElementById('mainViewContainer'), state.adminOverview, renderPricingKeepingDrafts);
+  bindMore(document.getElementById('mainViewContainer'), adminPricingCatalog(), renderPricingKeepingDrafts);
   document.getElementById('pricingCtvSelect')?.addEventListener('change', e => {
     const select = e.currentTarget;
     if (select.closest('.glass-panel')?.querySelector('[data-dirty="1"]') && !window.confirm('Bỏ thay đổi chưa lưu để chuyển bảng giá?')) {
@@ -3727,16 +4017,15 @@ function bindAdminPricingEvents() {
   document.getElementById('btnRefreshAdminPricing')?.addEventListener('click', async () => {
     const btn = document.getElementById('btnRefreshAdminPricing');
     if (btn) { btn.disabled = true; btn.textContent = '↻ Đang tải...'; }
-    if (state.pricingCtvId) return loadCtvPricing(state.pricingCtvId, true);
     showToast('Đang tải giá gốc mới nhất từ nguồn API...');
-    await Promise.all([loadCatalog(true), loadAdminOverview()]);
+    await Promise.all([loadCtvPricing(state.pricingCtvId, true), loadAdminOverview()]);
     renderCurrentView();
   });
 
   document.querySelectorAll('[data-adm-ptab]').forEach((btn) => {
     btn.addEventListener('click', () => {
       state.adminPricingTab = btn.dataset.admPtab;
-      renderCurrentView();
+      loadCtvPricing(state.pricingCtvId);
     });
   });
 
@@ -3867,7 +4156,7 @@ function bindAdminPricingEvents() {
   document.querySelectorAll('[data-adm-pkg-filter]').forEach((btn) => {
     btn.addEventListener('click', () => {
       state.adminPkgCatFilter = btn.dataset.admPkgFilter;
-      renderCurrentView();
+      loadCtvPricing(state.pricingCtvId, false, { silent: true });
     });
   });
 
@@ -3973,26 +4262,28 @@ function bindAdminPricingEvents() {
 
   document.getElementById('admFruitFilterSelect')?.addEventListener('change', (e) => {
     state.adminFruitFilter = e.target.value;
-    renderCurrentView();
+    loadCtvPricing(state.pricingCtvId, false, { silent: true });
   });
 
   const searchIn = document.getElementById('admFruitSearchInput');
   searchIn?.addEventListener('input', (e) => {
-    state.adminFruitSearch = e.target.value;
+    const val = e.target.value;
+    state.adminFruitSearch = val;
     if (admFruitSearchTimer && typeof clearTimeout === 'function') clearTimeout(admFruitSearchTimer);
-    admFruitSearchTimer = setTimeout(() => {
-      const tbody = document.getElementById('admFruitTbody');
-      if (!tbody) return;
-      const fruits = adminPricingCatalog()?.catalog?.fruit_by_fruit || [];
-      const q = state.adminFruitSearch.trim().toLowerCase();
-      const filtered = fruits.filter((f) => {
-        if (state.adminFruitFilter === 'custom' && !f._admin?.has_custom_override) return false;
-        if (q && !f.name.toLowerCase().includes(q)) return false;
-        return true;
-      });
-      tbody.innerHTML = renderAdminFruitRowsHtml(filtered);
-      bindAdminFruitRowEvents();
-    }, 80);
+    admFruitSearchTimer = setTimeout(async () => {
+      if (state.currentView !== 'admin_pricing' || state.adminPricingTab !== 'fruits' || val !== state.adminFruitSearch) return;
+      const active = document.activeElement;
+      const hadFocus = active?.id === 'admFruitSearchInput';
+      const pos = hadFocus ? active.selectionStart : null;
+      await loadCtvPricing(state.pricingCtvId, false, { silent: true });
+      if (hadFocus && val === state.adminFruitSearch) {
+        const inp = document.getElementById('admFruitSearchInput');
+        if (inp) {
+          inp.focus();
+          if (pos != null) { try { inp.setSelectionRange(pos, pos); } catch {} }
+        }
+      }
+    }, 250);
   });
 
   bindAdminFruitRowEvents();
@@ -4263,7 +4554,7 @@ function renderAdminCtvPageHtml() {
     <div class="stats-three-grid">
       <div class="glass-panel">
         <div style="font-size:12px;color:var(--color-moon-mist);">Tổng số tài khoản CTV</div>
-        <div style="font-size:24px;font-weight:700;color:var(--color-pure-white);margin-top:4px;">${ctvs.length} CTV</div>
+        <div style="font-size:24px;font-weight:700;color:var(--color-pure-white);margin-top:4px;">${stats.totalCtvCount ?? ctvs.length} CTV</div>
       </div>
       <div class="glass-panel">
         <div style="font-size:12px;color:var(--color-moon-mist);">Tổng doanh thu CTV đặt đơn</div>
@@ -4364,6 +4655,7 @@ function renderAdminCtvPageHtml() {
           </tbody>
         </table>
       </div>
+      ${moreButton(state.adminOverview, 'ctvs')}
     </div>
   `;
 }
@@ -4391,6 +4683,11 @@ function openResetCtvPasswordModal(ctvId) {
 }
 
 function bindAdminCtvEvents() {
+  bindMore(document.getElementById('mainViewContainer'), state.adminOverview, () => {
+    const fields = Array.from(document.querySelectorAll('#mainViewContainer input')).map(el => [el.id, el.value]);
+    renderCurrentView();
+    for (const [id, value] of fields) { const input = document.getElementById(id); if (input) input.value = value; }
+  });
   document.getElementById('btnGotoStorageSetup')?.addEventListener('click', () => {
     switchView('admin_system');
   });
@@ -4479,7 +4776,7 @@ function bindAdminCtvEvents() {
       try {
         const r = await apiFetch(`/api/admin/ctv/${encodeURIComponent(id)}`, 'DELETE', { confirmDelete: true });
         state.adminOverview.ctvs = state.adminOverview.ctvs.filter(u => u.id !== id);
-        state.adminOverview.stats.totalCtvCount = state.adminOverview.ctvs.length;
+        state.adminOverview.stats.totalCtvCount = Math.max(0, state.adminOverview.stats.totalCtvCount - 1);
         state.adminMonitor = null;
         if (state.adminMonitorCtvId === id) {
           state.adminMonitorCtvId = null;
@@ -4696,7 +4993,7 @@ function bindAdminSystemEvents() {
       const payload = parsed.backup ? { backup: parsed.backup } : { backup: parsed };
       const r = await apiFetch('/api/admin/backup/import', 'POST', payload);
       showToast(r.message || 'Đã khôi phục dữ liệu thành công!');
-      await Promise.all([loadAdminOverview(), loadCatalog(true), loadOrders(true)]);
+      await Promise.all([loadAdminOverview(), loadCatalog(true, catalogSummaryScope()), loadOrders(true)]);
       renderCurrentView();
     } catch (err) {
       showToast(`Lỗi khôi phục: ${err.message}`);
@@ -4733,7 +5030,7 @@ function bindAdminSystemEvents() {
       showToast('⏳ Đang kết nối lại và đồng bộ dữ liệu...');
       const r = await apiFetch('/api/admin/source/reconnect', 'POST');
       showToast(r.message);
-      await Promise.all([loadCatalog(true), loadAdminOverview()]);
+      await Promise.all([loadCatalog(true, catalogSummaryScope()), loadAdminOverview()]);
       renderCurrentView();
     } catch (err) {
       showToast(err.message);
@@ -4754,7 +5051,7 @@ function bindAdminSystemEvents() {
     try {
       const r = await apiFetch('/api/admin/settings', 'PUT', { sourceEmail, sourcePassword });
       showToast(r.message);
-      await Promise.all([loadCatalog(true), loadAdminOverview()]);
+      await Promise.all([loadCatalog(true, catalogSummaryScope()), loadAdminOverview()]);
       renderCurrentView();
     } catch (err) {
       showToast(err.message);
@@ -4779,7 +5076,7 @@ function bindGlobalEvents() {
     if (Date.now() - lastClientCatalogSyncAt < intervalMs) return;
     lastClientCatalogSyncAt = Date.now();
     try {
-      const catChanged = await loadCatalog(false);
+      const catChanged = await loadCatalog(false, catalogSummaryScope());
       if (catChanged && !isUserTypingOrModalOpen() && (ORDER_VIEWS.includes(state.currentView) || state.currentView === 'dashboard' || state.currentView === 'admin_pricing')) {
         renderCurrentView();
       }
@@ -4792,8 +5089,8 @@ function bindGlobalEvents() {
     try {
       const result = await apiFetch('/api/auth/me');
       if (result.user) { state.user = result.user; updateShellAuthUI(); }
-      if (state.currentView === 'admin_monitor' && state.user?.role === 'admin') {
-        await loadAdminMonitor();
+      if (state.currentView === 'admin_monitor' && state.user?.role === 'admin' && !isUserTypingOrModalOpen()) {
+        await loadAdminMonitor(true);
       } else if ((ORDER_VIEWS.includes(state.currentView) || state.currentView === 'dashboard' || state.currentView === 'order_history') && !isUserTypingOrModalOpen()) {
         const changed = await loadOrders(false);
         if (changed && !isUserTypingOrModalOpen()) renderCurrentView();
@@ -4817,7 +5114,7 @@ function bindGlobalEvents() {
       const remoteVer = Number(p.updateVersion || 0);
       if (p.pricingVersion && p.pricingVersion !== state.lastFullPricingVersion && state.user?.role === 'ctv' &&
           !state.maintenanceLocked && !state.loadingCatalog && !isUserTypingOrModalOpen()) {
-        await loadCatalog(false);
+        await loadCatalog(false, catalogSummaryScope());
         if (!isUserTypingOrModalOpen() && (ORDER_VIEWS.includes(state.currentView) || state.currentView === 'dashboard')) renderCurrentView();
       }
       if (state.seenUpdateVersion == null) {
@@ -4839,7 +5136,7 @@ function bindGlobalEvents() {
       if (Date.now() - lastClientCatalogSyncAt < intervalMs) return;
       lastClientCatalogSyncAt = Date.now();
       try {
-        const catChanged = await loadCatalog(false);
+        const catChanged = await loadCatalog(false, catalogSummaryScope());
         if (catChanged && !isUserTypingOrModalOpen() && (ORDER_VIEWS.includes(state.currentView) || state.currentView === 'dashboard' || state.currentView === 'admin_pricing')) {
           renderCurrentView();
         }

@@ -232,7 +232,7 @@ function createClient(fetchImpl = async () => { throw new Error('Unexpected requ
     localStorage: { getItem: () => null, removeItem() {} },
     sessionStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
     document: { getElementById: element, querySelectorAll: () => [] },
-    fetch: fetchImpl, console: { ...console, error() {} }, setTimeout,
+    URLSearchParams, fetch: fetchImpl, console: { ...console, error() {} }, setTimeout,
   });
   vm.runInContext(toolsSource.replace(/^export /m, '') + '\n' + clientSource.replace(/^import .*;\r?\n/gm, '').replace(/bootstrap\(\);\s*$/, '') + '\nglobalThis.testState = state;', context);
   return { context, state: context.testState, element, storage };
@@ -1767,4 +1767,230 @@ test('identity extraction tool replaces user_search sidebar, converts Role ID <-
   assert.match(rendered, /1070894579678792892/);
   assert.match(rendered, /data-copy-value="RK8C-CKHL-LMGG"/);
   assert.match(rendered, /7 client game hoạt động/);
+});
+
+test('list pagination keeps ledger totals, cursor order and CTV isolation across concurrent inserts', async t => {
+  const calls = [];
+  const app = await startTestServer(t, async url => {
+    calls.push(url);
+    return { ok: true, status: 200, json: async () => ({ data: {} }) };
+  }, { seed(data) {
+    for (let i = 0; i < 24; i++) {
+      data.transactions.push({ id: 'tx' + i, userId: 'seller', type: 'order_debit', amount: -100 });
+      data.transactions.push({ id: 'other' + i, userId: 'owner', type: 'order_debit', amount: -999 });
+    }
+  } });
+  const seller = (await app.login('seller', 'seller-test-password')).body.token;
+  const admin = (await app.login('owner', 'owner-test-password')).body.token;
+  const base = '/api/settlements?paged=1';
+  const first = (await app.request(base, 'GET', seller)).body;
+  assert.equal(first.transactions.length, 10);
+  assert.equal(first.pageInfo.transactions.total, 24);
+  assert.equal(first.summary.totalSpent, 2400);
+  assert.equal(first.orders, undefined);
+  app.db.transactions.unshift({ id: 'newest', userId: 'seller' });
+  const next = (await app.request(base + '&only=transactions&after=tx9', 'GET', seller)).body;
+  assert.deepEqual(next.transactions.map(t => t.id), Array.from({ length: 10 }, (_,i) => 'tx' + (10+i)));
+  const last = (await app.request(base + '&only=transactions&after=tx19', 'GET', seller)).body;
+  assert.equal(last.transactions.length, 4);
+  assert.equal(last.pageInfo.transactions.more, false);
+  for (let i=0; i<25; i++) app.db.auditLog.unshift({ id: 'ev' + i, actorId:'seller' });
+  const mon = (await app.request('/api/admin/monitor?paged=1','GET', admin)).body;
+  assert.equal(mon.events.length, 10);
+  const callCount = calls.length;
+  const tail = (await app.request('/api/admin/monitor?paged=1&only=events&after=' + mon.events.at(-1).id,'GET',admin)).body;
+  assert.equal(tail.events.length, 10);
+  assert.equal(tail.ctvs, undefined);
+  assert.equal(calls.length, callCount);
+  assert.equal((await app.request('/api/admin/monitor?paged=1&only=events','GET',seller)).status, 403);
+});
+
+test('category reads request source pages of ten only when needed and isolate seller orders', async t => {
+  const paths = [];
+  const app = await startTestServer(t, async url => {
+    const path = new URL(url);
+    paths.push(path.pathname + path.search);
+    const page = Number(path.searchParams.get('page') || 1);
+    const active = path.searchParams.get('status_group') === 'active';
+    const data = active ? Array.from({length: page < 3 ? 10 : 3}, (_,i) => ({
+      id: 100 - (page-1)*10 - i, created_at: new Date(Date.UTC(2026, 0, 30-(page-1)*10-i)).toISOString(), total_cnt:1,
+    })) : [];
+    return { ok:true, status:200, json:async()=>({data:{data,total:active?23:0,last_page:active?3:1}}) };
+  });
+  const admin = (await app.login('owner','owner-test-password')).body.token;
+  const seller = (await app.login('seller','seller-test-password')).body.token;
+  const base = '/api/orders?paged=1&category=buff_tim';
+  assert.equal((await app.request(base, 'GET', seller)).body.orders.length, 0);
+  assert.deepEqual(paths, []);
+  const read = async depth => (await app.request(base + '&depth=' + depth, 'GET', admin)).body;
+  const a = await read(1);
+  assert.equal(a.orders.length, 10);
+  assert.equal(a.more, true);
+  assert.equal(paths.length, 2);
+  assert.ok(paths.every(p => p.startsWith('/api/buff-tim-orders?') && p.includes('page=1&per_page=10')));
+  const b = await read(2);
+  assert.equal(b.orders.length, 20);
+  assert.equal(paths.length, 3);
+  assert.match(paths.at(-1), /page=2&per_page=10/);
+  const c = await read(3);
+  assert.equal(new Set(c.orders.map(o => o.id)).size, 23);
+  assert.equal(c.more, false);
+});
+
+test('paged order window recovers multi-page depth, skips completed stream when running, and keeps stale rows on refresh error', async t => {
+  const paths = [];
+  let failUpstream = false;
+  const app = await startTestServer(t, async url => {
+    const path = new URL(url);
+    paths.push(path.pathname + path.search);
+    if (failUpstream) throw new Error('upstream down');
+    const page = Number(path.searchParams.get('page') || 1);
+    const active = path.searchParams.get('status_group') === 'active';
+    const data = active ? Array.from({ length: page <= 2 ? 10 : 4 }, (_, i) => ({
+      id: 200 - (page - 1) * 10 - i,
+      created_at: new Date(Date.UTC(2026, 2, 28 - (page - 1) * 10 - i)).toISOString(),
+      total_cnt: 5,
+      is_active: true,
+      status: 'assigned',
+    })) : [];
+    return { ok: true, status: 200, json: async () => ({ data: { data, total: active ? 24 : 0, last_page: active ? 3 : 1 } }) };
+  });
+  const admin = (await app.login('owner', 'owner-test-password')).body.token;
+  // Cold start directly at depth=2 with progress=running should skip completed stream and load both pages
+  const res = (await app.request('/api/orders?paged=1&category=buff_tim&depth=2&progress=running', 'GET', admin)).body;
+  assert.equal(res.orders.length, 20);
+  assert.equal(res.more, true);
+  assert.equal(paths.length, 2);
+  assert.ok(paths.every(p => p.includes('status_group=active')));
+
+  // Transient upstream failure on refresh should preserve previously loaded page 1 rows instead of returning empty
+  failUpstream = true;
+  const fallback = (await app.request('/api/orders?paged=1&category=buff_tim&depth=1&refresh=1&progress=running', 'GET', admin)).body;
+  assert.equal(fallback.partial, true);
+  assert.equal(fallback.orders.length, 10);
+});
+
+test('catalog pagination preserves fruitCounts on all pricing tabs, paginates packages/fruits, and skips audit spam on fruit preview', async t => {
+  const fruitItems = Array.from({ length: 15 }, (_, i) => ({
+    id: i + 1,
+    item_id: 100 + i,
+    base_price: 100 + i * 10,
+    is_active: true,
+    item: { name: i === 12 ? 'Nhân sâm vàng' : `Trái mẫu ${i + 1}`, grade: 1 },
+  }));
+  const buffTimPkgs = Array.from({ length: 14 }, (_, i) => ({
+    id: i + 1,
+    quantity: (i + 1) * 10,
+    total_price: (i + 1) * 1000,
+    original_price: (i + 1) * 1000,
+    is_active: true,
+  }));
+  const app = await startTestServer(t, async url => {
+    const path = new URL(url).pathname;
+    if (path === '/api/settings') return { ok: true, status: 200, json: async () => ({ data: { is_send_task: true, is_send_fruitorder: true, is_send_bufftimorder: true } }) };
+    if (path === '/api/fruit-items') return { ok: true, status: 200, json: async () => ({ data: fruitItems }) };
+    if (path === '/api/fruit-stock') return { ok: true, status: 200, json: async () => ({ data: fruitItems.map(f => ({ fruit_item_id: f.id, total_quantity: f.id * 5 })), meta: { coin: { quantity: 5000000, estimated_per_hour: 100000 }, coin_tiers: [] } }) };
+    if (path === '/api/fruit-coin-price-packages') return { ok: true, status: 200, json: async () => ({ data: [] }) };
+    if (path === '/api/buff-tim-price-packages') return { ok: true, status: 200, json: async () => ({ data: buffTimPkgs }) };
+    if (path === '/api/order-pricing/preview-fruit') return { ok: true, status: 200, json: async () => ({ data: { total_price: 500 } }) };
+    return { ok: true, status: 200, json: async () => ({ data: [] }) };
+  });
+  const admin = (await app.login('owner', 'owner-test-password')).body.token;
+  const seller = (await app.login('seller', 'seller-test-password')).body.token;
+
+  const catTab = (await app.request('/api/catalog?paged=1&pricingTab=categories', 'GET', admin)).body;
+  assert.equal(catTab.fruitCounts.all, 15);
+  assert.equal(catTab.catalog.fruit_by_fruit.length, 1);
+
+  const pkgTab = (await app.request('/api/catalog?paged=1&pricingTab=packages&pkgCat=all', 'GET', admin)).body;
+  assert.equal(pkgTab.fruitCounts.all, 15);
+  assert.equal(pkgTab.catalog.pricing_packages.length, 10);
+  assert.equal(pkgTab.pageInfo.pricing_packages.more, true);
+  const pkgNext = (await app.request('/api/catalog?paged=1&pricingTab=packages&pkgCat=all&only=pricing_packages&after=' + encodeURIComponent(pkgTab.catalog.pricing_packages.at(-1).id), 'GET', admin)).body;
+  assert.equal(pkgNext.catalog.pricing_packages.length, 4);
+  assert.equal(pkgNext.pageInfo.pricing_packages.more, false);
+
+  const ctvFruits = (await app.request('/api/catalog?paged=1&scope=fruit_by_fruit&compact=1', 'GET', seller)).body;
+  assert.equal(ctvFruits.catalog.fruit_by_fruit.length, 10);
+  assert.equal(ctvFruits.pageInfo.fruit_by_fruit.total, 15);
+  assert.equal(ctvFruits.pageInfo.fruit_by_fruit.more, true);
+  const ctvSearch = (await app.request('/api/catalog?paged=1&scope=fruit_by_fruit&compact=1&q=' + encodeURIComponent('Nhân sâm'), 'GET', seller)).body;
+  assert.equal(ctvSearch.catalog.fruit_by_fruit.length, 1);
+  assert.equal(ctvSearch.catalog.fruit_by_fruit[0].id, 13);
+
+  const auditBefore = app.db.auditLog.length;
+  const preview = await app.request('/api/catalog/preview-fruit', 'POST', seller, { fruit_item_id: 1, total_cnt: 5, mutation_list: [] });
+  assert.equal(preview.status, 200);
+  assert.equal(app.db.auditLog.length, auditBefore);
+});
+
+test('admin overview and client pagination render accurate counts and history weather alignment', async t => {
+  const app = await startTestServer(t, async () => ({ ok: true, status: 200, json: async () => ({ data: {} }) }), {
+    seed(data) {
+      for (let i = 1; i <= 14; i++) {
+        data.users.push({ id: `ctv_${i}`, username: `ctv${i}`, email: `ctv${i}@test.invalid`, name: `CTV ${i}`, role: 'ctv', balance: 0, isLocked: false, password: 'x' });
+      }
+      for (let i = 1; i <= 13; i++) {
+        data.localOrders.push({ id: `ord_${i}`, remoteOrderId: i, category: 'buff_tim', summary: `Gói ${i}`, sellPrice: 1000, costPrice: 500, markupAmount: 500, placedBy: { id: 'seller', name: 'Seller', role: 'ctv' }, status: 'pending', isActive: true, createdAt: new Date(Date.UTC(2026, 1, 20 - i)).toISOString() });
+      }
+    },
+  });
+  const admin = (await app.login('owner', 'owner-test-password')).body.token;
+  const ov1 = (await app.request('/api/admin/overview?paged=1', 'GET', admin)).body;
+  assert.equal(ov1.ctvs.length, 10);
+  assert.equal(ov1.pageInfo.ctvs.more, true);
+  assert.equal(ov1.stats.totalCtvCount, 15);
+  const ov2 = (await app.request('/api/admin/overview?paged=1&only=ctvs&after=' + encodeURIComponent(ov1.ctvs.at(-1).id), 'GET', admin)).body;
+  assert.equal(ov2.ctvs.length, 5);
+  assert.equal(ov2.pageInfo.ctvs.more, false);
+
+  const det1 = (await app.request('/api/admin/monitor/ctv/seller?paged=1&tab=orders', 'GET', admin)).body;
+  assert.equal(det1.orders.length, 10);
+  assert.equal(det1.pageInfo.orders.total, 13);
+  assert.equal(det1.events, undefined);
+  const det2 = (await app.request('/api/admin/monitor/ctv/seller?paged=1&only=orders&after=' + encodeURIComponent(det1.orders.at(-1).id), 'GET', admin)).body;
+  assert.equal(det2.orders.length, 3);
+  assert.equal(det2.pageInfo.orders.more, false);
+
+  const { context, state } = createClient();
+  state.user = { id: 'seller', name: 'Seller', role: 'ctv', balance: 50000 };
+  state.orders = [{ id: 'w1', remoteOrderId: 77, category: 'weather_buff', summary: 'Gói 10 lần', totalCnt: 10, completedCnt: 4, sellPrice: 20000, status: 'assigned', isActive: true, weather: { packageQuantity: 10, slots: [], weathers: [], trackUrl: 'https://example.test/t' }, createdAt: '2026-01-01T00:00:00Z' }];
+  const histRow = vm.runInContext('renderOrderHistoryTbodyHtml()', context);
+  assert.match(histRow, /40%/);
+  const btn = vm.runInContext('moreButton({ items: [1,2,3], pageInfo: { items: { more: true, total: 25 } } }, "items")', context);
+  assert.match(btn, /Xem thêm \(3\/25\)/);
+
+  // Admin pricing page renders accurate counts on all 3 tabs with pagination controls
+  state.user = { id: 'owner', name: 'Owner', role: 'admin' };
+  state.adminOverview = {
+    ctvs: Array.from({ length: 10 }, (_, i) => ({ id: `c${i}`, username: `ctv${i}`, name: `CTV ${i}`, balance: 0 })),
+    pageInfo: { ctvs: { total: 15, more: true } },
+    stats: { totalCtvCount: 15, ctvRevenue: 0, ctvProfit: 0 },
+    settings: { categoryMarkups: {}, categoryMarkupModes: {}, categoryMarkupPercents: {}, packagePriceOverrides: {}, fruitUnitPrices: {} },
+  };
+  state.pricingCatalog = {
+    syncedAt: '2026-01-01T00:00:00Z',
+    systemStatus: { buff_tim: true, fruit_by_fruit: true },
+    fruitCounts: { all: 154, custom: 3 },
+    packageCounts: { buff_tim: 14 },
+    pageInfo: { pricing_packages: { total: 14, more: true }, fruit_by_fruit: { total: 154, more: true } },
+    catalog: {
+      pricing_packages: Array.from({ length: 10 }, (_, i) => ({ id: `buff_tim:${i + 1}`, category: 'buff_tim', giftName: null, pkg: { id: i + 1, quantity: 10, total_price: 5000, _admin: { cost_effective: 3000, profit: 2000 } } })),
+      fruit_by_fruit: [{ id: 1, name: 'Nhân sâm', stock_quantity: 50, unit_price: 200, _admin: { cost_unit_price: 150 } }],
+    },
+  };
+  state.adminPricingTab = 'packages';
+  const pkgHtml = vm.runInContext('renderAdminPricingPageHtml()', context);
+  assert.match(pkgHtml, /154 loại/);
+  assert.match(pkgHtml, /14 gói/);
+  assert.match(pkgHtml, /Tải thêm CTV \(10\/15\)/);
+  assert.match(pkgHtml, /Xem thêm \(10\/14\)/);
+
+  state.adminPricingTab = 'categories';
+  const catHtml = vm.runInContext('renderAdminPricingPageHtml()', context);
+  assert.match(catHtml, /154 loại/);
+
+  const ctvHtml = vm.runInContext('renderAdminCtvPageHtml()', context);
+  assert.match(ctvHtml, /15 CTV/);
+  assert.match(ctvHtml, /Xem thêm \(10\/15\)/);
 });

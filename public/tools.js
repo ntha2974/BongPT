@@ -1,4 +1,4 @@
-export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml: esc, showToast, formatVnd: money, formatDateVi: date, renderCurrentView, loadOrders }) {
+export function createToolViews({ state, apiFetch, moreButton, bindMore, createRequestKey, escapeHtml: esc, showToast, formatVnd: money, formatDateVi: date, renderCurrentView, loadOrders }) {
   const panel = (title, content, extra = '') => `<section class="glass-panel" ${extra}><div class="panel-title-row"><span class="panel-title-text">${title}</span></div>${content}</section>`;
   const button = (label, attribute, id, cls = 'btn-frost') => `<button type="button" class="${cls}" ${attribute}="${esc(id)}">${label}</button>`;
 
@@ -27,6 +27,7 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
     if (a === 'POST /customer/search-ingame') return '🔍 Tìm nhân vật trong game';
     if (a === 'POST /customer/select-ingame') return '✓ Chọn nhân vật khách hàng';
     if (a === 'POST /customer/resolve-role-id') return '🆔 Tra cứu khách theo Role ID';
+    if (a === 'POST /catalog/preview-fruit') return '🧮 Xem trước giá trái cây';
     if (a === 'POST /tools/identity/lookup') return '🔎 Trích xuất ID Game / Tên nhân vật';
     if (a === 'POST /tools/identity/profile') return '👤 Xem hồ sơ nhân vật chi tiết';
     if (/^POST \/admin\/ctv\/[^/]+\/balance$/.test(a)) return '💰 Admin nạp / trừ ví CTV';
@@ -236,7 +237,7 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
     if (state.currentView === 'identity_tools') renderCurrentView();
 
     try {
-      const r = await apiFetch('/api/tools/identity/lookup', 'POST', { query: q, mode });
+      const r = await apiFetch('/api/tools/identity/lookup?paged=1', 'POST', { query: q, mode });
       if (r.availableClients !== undefined && r.availableClients !== null) {
         idState.clientStatus = {
           loading: false,
@@ -251,6 +252,8 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
         query: q,
         mode: r.mode || mode,
         resolvedBy: r.resolvedBy || mode,
+        listUrl: r.listUrl,
+        pageInfo: r.pageInfo,
         decoded: r.decoded || null,
         notFoundInGame: Boolean(r.notFoundInGame),
         players,
@@ -258,7 +261,7 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
       idState.history = [q, ...idState.history.filter((item) => item.toLowerCase() !== q.toLowerCase())].slice(0, 6);
       idState.loading = false;
 
-      if (players.length === 1) {
+      if (players.length === 1 && !r.pageInfo?.players?.more) {
         idState.selectedSuid = players[0].suid;
         idState.selectedDetail = players[0];
         if (state.currentView === 'identity_tools') renderCurrentView();
@@ -451,7 +454,7 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
           ? `
             <section class="glass-panel">
               <div class="panel-title-row" style="flex-wrap:wrap;gap:8px;">
-                <span class="panel-title-text">📋 Kết quả trích xuất (${players.length} nhân vật)</span>
+                <span class="panel-title-text">📋 Kết quả trích xuất (${idState.lastResult?.pageInfo?.players?.total ?? players.length} nhân vật)</span>
                 <span class="tool-note">Nhấn nút sao chép nhanh hoặc bấm vào nhân vật để xem hồ sơ chi tiết</span>
               </div>
               <div class="id-tool-results-grid">
@@ -492,6 +495,7 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
                   `;
                 }).join('')}
               </div>
+              ${moreButton(idState.lastResult, 'players')}
             </section>
           `
           : '';
@@ -562,6 +566,7 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
   }
 
   function bindIdentityToolsEvents() {
+    bindMore(document.getElementById('mainViewContainer'), getIdentityState().lastResult, renderCurrentView);
     const idState = getIdentityState();
 
     document.getElementById('btnIdentityRefreshClients')?.addEventListener('click', () => {
@@ -657,33 +662,53 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
     });
   }
 
-  async function loadAdminMonitorCtvDetail(ctvId, silent = false) {
+  let detailVersion = 0;
+  async function loadAdminMonitorCtvDetail(ctvId, silent = false, retain = false) {
     if (state.user?.role !== 'admin' || !ctvId) return;
     state.adminMonitorCtvId = ctvId;
+    const version = ++detailVersion;
     if (!silent) {
       state.adminMonitorCtvLoading = true;
       if (state.currentView === 'admin_monitor') renderCurrentView();
     }
     try {
-      const response = await apiFetch(`/api/admin/monitor/ctv/${encodeURIComponent(ctvId)}`);
-      if (state.user?.role !== 'admin' || state.adminMonitorCtvId !== ctvId) return;
+      const qs = retainedPages(retain ? state.adminMonitorCtvDetail : null);
+      qs.set('q', state.adminMonitorCtvOrderSearch || '');
+      qs.set('tab', state.adminMonitorCtvTab || 'orders');
+      if (state.adminMonitorCtvCatFilter && state.adminMonitorCtvCatFilter !== 'all') qs.set('category', state.adminMonitorCtvCatFilter);
+      const response = await apiFetch(`/api/admin/monitor/ctv/${encodeURIComponent(ctvId)}?${qs}`);
+      if (version !== detailVersion || state.user?.role !== 'admin' || state.adminMonitorCtvId !== ctvId) return;
       state.adminMonitorCtvDetail = response;
     } catch (error) {
       if (!silent) showToast(error.message);
     } finally {
-      state.adminMonitorCtvLoading = false;
-      if (state.currentView === 'admin_monitor') renderCurrentView();
+      if (version === detailVersion) {
+        state.adminMonitorCtvLoading = false;
+        if (state.currentView === 'admin_monitor') renderCurrentView();
+      }
     }
   }
 
-  async function loadAdminMonitor() {
+  function retainedPages(previous) {
+    const qs = new URLSearchParams({ paged: '1' });
+    for (const key of Object.keys(previous?.pageInfo || {})) {
+      if (previous[key]?.length > 10) qs.set('keep_' + key, String(previous[key].length));
+    }
+    return qs;
+  }
+
+  let monitorVersion = 0;
+  async function loadAdminMonitor(retain = false) {
     if (state.user?.role !== 'admin') return;
     try {
-      const response = await apiFetch('/api/admin/monitor');
-      if (state.user?.role !== 'admin') return;
+      const version = ++monitorVersion;
+      const qs = retainedPages(retain === true ? state.adminMonitor : null);
+      const response = await apiFetch('/api/admin/monitor?' + qs);
+      if (version !== monitorVersion || state.user?.role !== 'admin' || state.currentView !== 'admin_monitor') return;
       state.adminMonitor = response;
+
       if (state.adminMonitorCtvId) {
-        await loadAdminMonitorCtvDetail(state.adminMonitorCtvId, true);
+        await loadAdminMonitorCtvDetail(state.adminMonitorCtvId, true, retain === true);
         return;
       }
       if (state.currentView === 'admin_monitor') renderCurrentView();
@@ -761,7 +786,7 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
           <input type="text" id="monitorCtvOrderSearch" class="input-box" style="flex:1;min-width:200px;" placeholder="🔍 Tìm theo khách hàng, SUID, mã đơn, gói..." value="${esc(state.adminMonitorCtvOrderSearch || '')}" />
           <select id="monitorCtvCatFilter" class="input-box" style="width:auto;min-width:170px;">
-            <option value="all" ${catFilter === 'all' ? 'selected' : ''}>Tất cả danh mục (${allOrders.length})</option>
+            <option value="all" ${catFilter === 'all' ? 'selected' : ''}>Tất cả danh mục (${detail.pageInfo?.orders?.total ?? allOrders.length})</option>
             ${Object.entries(CAT_LABELS).map(([k, lbl]) => `<option value="${k}" ${catFilter === k ? 'selected' : ''}>${esc(lbl)}</option>`).join('')}
           </select>
         </div>
@@ -836,12 +861,13 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
         </div>
 
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">
-          <button type="button" class="btn-frost ${tab === 'orders' ? 'is-active' : ''}" data-ctv-detail-tab="orders">📦 Đơn đã đặt (${allOrders.length})</button>
-          <button type="button" class="btn-frost ${tab === 'events' ? 'is-active' : ''}" data-ctv-detail-tab="events">🕒 Nhật ký hoạt động (${evList.length})</button>
-          <button type="button" class="btn-frost ${tab === 'transactions' ? 'is-active' : ''}" data-ctv-detail-tab="transactions">💳 Biến động ví (${trxList.length})</button>
+          <button type="button" class="btn-frost ${tab === 'orders' ? 'is-active' : ''}" data-ctv-detail-tab="orders">📦 Đơn đã đặt (${detail.pageInfo?.orders?.total ?? allOrders.length})</button>
+          <button type="button" class="btn-frost ${tab === 'events' ? 'is-active' : ''}" data-ctv-detail-tab="events">🕒 Nhật ký hoạt động (${detail.pageInfo?.events?.total ?? evList.length})</button>
+          <button type="button" class="btn-frost ${tab === 'transactions' ? 'is-active' : ''}" data-ctv-detail-tab="transactions">💳 Biến động ví (${detail.pageInfo?.transactions?.total ?? trxList.length})</button>
         </div>
 
         ${tabBody}
+        ${moreButton(detail, tab)}
       </section>
     `;
   }
@@ -886,11 +912,11 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
     const payable = panel('Admin phải thanh toán', `<strong style="font-size:24px">${payment?.amount != null ? money(payment.amount) : 'Chưa có số liệu nguồn'}</strong>
       <div class="tool-note">Hạn mức nguồn đã dùng trong tuần ${esc(payment?.weekStart || '')} · ${payment?.sourceSpent != null ? money(payment.sourceSpent) : 'Chưa xác định'}</div>
       <div class="tool-note">Tổng số dư ví CTV · ${payment ? money(payment.totalBalance) : '—'}</div>`);
-    return payable + panel('Giám sát & quản lý từng CTV', `<div class="tool-actions" style="flex-wrap:wrap;"><span class="badge-tag ${data.storageHealthy ? 'green' : 'red'}">${data.storageHealthy ? 'Lưu trữ đang hoạt động' : 'Lỗi ghi dữ liệu: tạm dừng giao dịch'}</span>${ctvSelectHtml}${button('Làm mới', 'data-refresh-monitor', '')}</div><p class="tool-note">Chọn CTV để xem nhật ký hoạt động, đơn đã đặt và biến động ví. Dữ liệu tự cập nhật mỗi phút.</p>${table(['CTV', 'Số dư', 'Đơn đã đặt', 'Trạng thái', 'Hoạt động gần nhất', 'Quản lý'], presence)}`)
+    return payable + panel('Giám sát & quản lý từng CTV', `<div class="tool-actions" style="flex-wrap:wrap;"><span class="badge-tag ${data.storageHealthy ? 'green' : 'red'}">${data.storageHealthy ? 'Lưu trữ đang hoạt động' : 'Lỗi ghi dữ liệu: tạm dừng giao dịch'}</span>${ctvSelectHtml}${button('Làm mới', 'data-refresh-monitor', '')}</div><p class="tool-note">Chọn CTV để xem nhật ký hoạt động, đơn đã đặt và biến động ví. Dữ liệu tự cập nhật mỗi phút.</p>${table(['CTV', 'Số dư', 'Đơn đã đặt', 'Trạng thái', 'Hoạt động gần nhất', 'Quản lý'], presence)}${moreButton(data, 'ctvs')}`)
       + renderSelectedCtvDetailHtml()
-      + panel('Yêu cầu cần kiểm tra', table(['CTV', 'Đơn / yêu cầu', 'Tiền giữ', 'Kết quả', 'Xử lý'], intents))
-      + panel('Yêu cầu hủy / hoàn tiền', `<p class="tool-note">Chỉ hoàn ví sau khi kiểm tra nguồn. Hủy đơn không tự động hoàn toàn bộ tiền.</p>${table(['CTV / nguồn', 'Đơn', 'Giá bán', 'Trạng thái', 'Thao tác'], cancellations)}`)
-      + panel('200 hoạt động gần nhất (toàn hệ thống)', table(['Thời điểm', 'Tài khoản', 'Hoạt động', 'Chi tiết / đối soát'], events));
+      + panel('Yêu cầu cần kiểm tra', table(['CTV', 'Đơn / yêu cầu', 'Tiền giữ', 'Kết quả', 'Xử lý'], intents) + moreButton(data, 'intents'))
+      + panel('Yêu cầu hủy / hoàn tiền', `<p class="tool-note">Chỉ hoàn ví sau khi kiểm tra nguồn. Hủy đơn không tự động hoàn toàn bộ tiền.</p>${table(['CTV / nguồn', 'Đơn', 'Giá bán', 'Trạng thái', 'Thao tác'], cancellations)}${moreButton(data, 'cancellations')}`)
+      + panel('Nhật ký hoạt động toàn hệ thống', table(['Thời điểm', 'Tài khoản', 'Hoạt động', 'Chi tiết / đối soát'], events) + moreButton(data, 'events'));
   }
 
   function openReviewModal(title, content, handler) {
@@ -919,8 +945,12 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
   }
 
   const readReview = form => ({ note: form.elements.note.value.trim(), confirmed: form.elements.confirmed.checked });
+  let detailSearchTimer;
   function bindAdminMonitorEvents() {
-    document.querySelectorAll('[data-refresh-monitor]').forEach(control => control.addEventListener('click', loadAdminMonitor));
+    const expanded = () => { monitorVersion++; renderCurrentView(); };
+    bindMore(document.getElementById('monitorCtvDetailPanel'), state.adminMonitorCtvDetail, expanded);
+    bindMore(document.getElementById('mainViewContainer'), state.adminMonitor, expanded);
+    document.querySelectorAll('[data-refresh-monitor]').forEach(control => control.addEventListener('click', () => loadAdminMonitor(false)));
 
     const selectCtv = async (ctvId) => {
       if (!ctvId) {
@@ -959,19 +989,31 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
     document.querySelectorAll('[data-ctv-detail-tab]').forEach(btn => {
       btn.addEventListener('click', () => {
         state.adminMonitorCtvTab = btn.dataset.ctvDetailTab;
-        renderCurrentView();
+        loadAdminMonitorCtvDetail(state.adminMonitorCtvId, false);
       });
     });
     document.getElementById('monitorCtvOrderSearch')?.addEventListener('input', (e) => {
-      const pos = e.target.selectionStart;
-      state.adminMonitorCtvOrderSearch = e.target.value;
-      renderCurrentView();
-      const inp = document.getElementById('monitorCtvOrderSearch');
-      if (inp) { inp.focus(); try { inp.setSelectionRange(pos, pos); } catch {} }
+      const value = e.target.value;
+      state.adminMonitorCtvOrderSearch = value;
+      clearTimeout(detailSearchTimer);
+      detailSearchTimer = setTimeout(async () => {
+        if (state.currentView !== 'admin_monitor') return;
+        const active = document.activeElement;
+        const hadFocus = active?.id === 'monitorCtvOrderSearch';
+        const pos = hadFocus ? active.selectionStart : null;
+        await loadAdminMonitorCtvDetail(state.adminMonitorCtvId, true);
+        if (hadFocus && value === state.adminMonitorCtvOrderSearch) {
+          const inp = document.getElementById('monitorCtvOrderSearch');
+          if (inp) {
+            inp.focus();
+            if (pos != null) { try { inp.setSelectionRange(pos, pos); } catch {} }
+          }
+        }
+      }, 250);
     });
     document.getElementById('monitorCtvCatFilter')?.addEventListener('change', (e) => {
       state.adminMonitorCtvCatFilter = e.target.value;
-      renderCurrentView();
+      loadAdminMonitorCtvDetail(state.adminMonitorCtvId, true);
     });
 
     document.querySelectorAll('[data-reconcile-intent]').forEach(control => control.addEventListener('click', () => {
