@@ -6,6 +6,7 @@ export function createToolViews({ state, apiFetch, moreButton, bindMore, createR
     fruit_coin: 'Xu nông trại',
     fruit_by_fruit: 'Trái cây lẻ',
     buff_tim: 'Buff Tim',
+    buff_luot_xem: 'Tăng lượt xem hồ sơ',
     buff_sao: 'Buff Sao',
     guestbook: 'Bài viết',
     farm_gift: 'Quà nông trại',

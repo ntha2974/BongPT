@@ -277,7 +277,7 @@ test('empty CTV history skips source calls and concurrent admin reads share a pa
   const admin = (await server.login('owner', 'owner-test-password')).body.token;
   const reads = await Promise.all([1, 2].map(() => server.request('/api/orders', 'GET', admin)));
   assert.ok(reads.every(r => r.status === 200 && r.body.partial === true));
-  assert.equal(requests, 11);
+  assert.equal(requests, 13);
 });
 
 test('CTV navigation cannot render admin pages or preserve prior admin data', () => {
@@ -347,6 +347,96 @@ async function prepareBuyer(server) {
   return { token, payload: { category: 'buff_tim', customer_id: 101, game_profile_id: null,
     price_package_id: 7, expected_price: 15000, idempotency_key: crypto.randomUUID() } };
 }
+
+test('profile-view packages use the selected CTV price at checkout and keep source orders private', async t => {
+  const category = 'buff_luot_xem';
+  const sourceOrders = '/api/buff-luot-xem-orders';
+  const standardSource = financeSource();
+  const creates = [];
+  let active = true;
+  const server = await startTestServer(t, async (url, options) => {
+    const { pathname, searchParams } = new URL(url);
+    let body;
+    if (pathname === '/api/settings') {
+      body = { data: { is_send_task: true, is_send_buffluotxemorder: active && searchParams.get('keys').split(',').includes('is_send_buffluotxemorder') } };
+    } else if (pathname === '/api/buff-luot-xem-price-packages' && searchParams.get('active') === '1') {
+      body = { data: [{ id: 2, quantity: 500, total_price: 9000, is_active: true }] };
+    } else if (pathname === sourceOrders && options.method === 'POST') {
+      creates.push(JSON.parse(options.body));
+      body = { success: true, data: { id: creates.length, total_price: 9000 } };
+    } else if (pathname === sourceOrders) {
+      const rows = searchParams.get('status_group') === 'completed'
+        ? [{ id: 91, total_cnt: 500, status: 'completed', completed_cnt: 500 }]
+        : [{ id: 1, total_cnt: 500, status: 'assigned', completed_cnt: 10 }];
+      body = { data: { data: rows, total: 1, last_page: 1 }, summary: { total_orders: 2 } };
+    } else {
+      return standardSource(url, options);
+    }
+    return { ok: true, status: 200, json: async () => body };
+  });
+  const admin = (await server.login('owner', 'owner-test-password')).body.token;
+  const { token, payload } = await prepareBuyer(server);
+  const catalog = async auth => (await server.request('/api/catalog?scope=' + category, 'GET', auth)).body;
+  const initial = await catalog(token);
+  assert.equal(initial.systemStatus[category], true);
+  assert.equal(initial.catalog[category][0].total_price, 14000);
+  assert.equal(initial.catalog[category][0]._admin, undefined);
+  const adminPackages = (await server.request('/api/catalog?paged=1&pricingTab=packages&pkgCat=' + category, 'GET', admin)).body;
+  assert.equal(adminPackages.packageCounts[category], 1);
+  assert.equal(adminPackages.catalog.pricing_packages[0].pkg._admin.cost_effective, 9000);
+  const settings = { categoryMarkupModes: { [category]: 'percent' }, categoryMarkupPercents: { [category]: 20 } };
+  assert.equal((await server.request('/api/admin/settings', 'PUT', admin, settings)).status, 200);
+  assert.equal((await catalog(token)).catalog[category][0].total_price, 10800);
+  const override = { packagePriceOverrides: { 'buff_luot_xem:2': 12500 } };
+  assert.equal((await server.request('/api/admin/ctv/seller/pricing', 'PUT', admin, override)).status, 200);
+  assert.equal((await catalog(token)).catalog[category][0].total_price, 12500);
+  const order = { ...payload, category, price_package_id: 2, expected_price: 12500 };
+  const place = (auth, change) => server.request('/api/orders/place', 'POST', auth, { ...order, ...change });
+  assert.equal((await place(token, { expected_price: 14000 })).body.code, 'PRICE_CHANGED');
+  active = false;
+  assert.equal((await place(token)).status, 400);
+  active = true;
+  const placed = (await place(token)).body;
+  assert.equal(placed.success, true);
+  assert.equal(placed.order.totalCnt, 500);
+  assert.equal(placed.userBalance, 37500);
+  assert.equal((await place(token)).body.order.id, placed.order.id);
+  assert.deepEqual(creates, [{ customer_id: 101, price_package_id: 2, is_active: true, confirm_duplicate_customer: false }]);
+  const list = '/api/orders?paged=1&category=' + category;
+  const sellerOrders = (await server.request(list, 'GET', token)).body;
+  assert.equal(sellerOrders.orders.length, 1);
+  assert.equal(sellerOrders.orders[0].completedCnt, 10);
+  assert.equal(sellerOrders.remoteSummaries, undefined);
+  const adminOrders = (await server.request(list, 'GET', admin)).body;
+  assert.equal(adminOrders.orders.length, 2);
+  assert.equal(adminOrders.remoteSummaries[category].total_orders, 2);
+  assert.match(adminOrders.orders.find(o => o.remoteOrderId === 91).summary, /500 lượt xem hồ sơ/);
+  const adminOrder = await place(admin, { expected_price: 10800, idempotency_key: crypto.randomUUID() });
+  assert.equal(adminOrder.body.order.costPrice, 9000);
+  assert.equal(adminOrder.body.order.markupAmount, 1800);
+});
+
+test('admin and CTV can open the profile-view order form and see their quoted package price', async () => {
+  const category = 'buff_luot_xem';
+  for (const [role, price] of [['admin', 14000], ['ctv', 12500]]) {
+    const { context, state, element } = createClient();
+    state.user = { role, balance: 50000 };
+    state.catalogData = {
+      systemStatus: { [category]: true },
+      catalog: { [category]: [{ id: 2, quantity: 500, total_price: price }] },
+    };
+    context.loadCatalog = async () => true;
+    Object.assign(element('appModalBody'), { querySelectorAll: () => [], querySelector: () => null });
+    const page = context.renderOrderCategoryPageHtml(category);
+    assert.match(page, /Đơn tăng lượt xem hồ sơ/);
+    assert.match(page, /id="btnViewCategoryPrices"/);
+    assert.match(page, /id="btnOpenAddOrderModal"/);
+    await context.openCreateOrderModal(category);
+    assert.equal(state.modalOrder.price_package_id, 2);
+    assert.equal(state.modalOrder.quotedPrice, price);
+    assert.match(element('appModalBody').innerHTML, /500 lượt xem/);
+  }
+});
 
 test('simultaneous purchases reserve funds before source calls and cannot overdraw the wallet', async t => {
   let creates = 0;
@@ -922,7 +1012,7 @@ test('CTV category edits, inheritance and resets stay isolated through quotes an
   assert.equal((await server.request(url, 'PUT', token, { categoryRules: rules })).status, 403);
   assert.equal((await put({ categoryRules: rules, packagePriceOverrides: { 'buff_tim:7': 21000 } })).status, 200);
   const selected = await scoped();
-  assert.equal(Object.keys(selected.categoryPricing).length, 8);
+  assert.equal(Object.keys(selected.categoryPricing).length, 9);
   assert.equal(selected.categoryPricing.buff_tim.productCount, 1);
   assert.equal(selected.categoryPricing.buff_sao.personal, false);
   assert.equal(selected.catalog.buff_tim[0].total_price, 21000);

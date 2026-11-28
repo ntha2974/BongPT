@@ -438,6 +438,7 @@ const DEFAULT_DB = {
       fruit_coin: 5000,
       fruit_by_fruit: 0, // Phí cộng thêm tùy chọn mỗi đơn Trái cây lẻ (+VNĐ/đơn)
       buff_tim: 5000,
+      buff_luot_xem: 5000,
       buff_sao: 5000,
       guestbook: 5000,
       farm_gift: 5000,
@@ -449,6 +450,7 @@ const DEFAULT_DB = {
       fruit_coin: 'fixed',
       fruit_by_fruit: 'fixed',
       buff_tim: 'fixed',
+      buff_luot_xem: 'fixed',
       buff_sao: 'fixed',
       guestbook: 'fixed',
       farm_gift: 'fixed',
@@ -460,6 +462,7 @@ const DEFAULT_DB = {
       fruit_coin: 0,
       fruit_by_fruit: 0,
       buff_tim: 0,
+      buff_luot_xem: 0,
       buff_sao: 0,
       guestbook: 0,
       farm_gift: 0,
@@ -896,6 +899,15 @@ const CATEGORY_METADATA = {
     apiOrderPath: '/api/buff-tim-orders',
     settingKey: 'is_send_bufftimorder',
     rateKey: 'buff_tim_order',
+  },
+  buff_luot_xem: {
+    key: 'buff_luot_xem',
+    name: 'Đơn tăng lượt xem hồ sơ',
+    menuLabel: 'Tăng lượt xem hồ sơ',
+    unit: 'lượt xem',
+    apiOrderPath: '/api/buff-luot-xem-orders',
+    settingKey: 'is_send_buffluotxemorder',
+    rateKey: 'buff_luot_xem_order',
   },
   buff_sao: {
     key: 'buff_sao',
@@ -1914,7 +1926,7 @@ function getCurrentMondayStr() {
 }
 
 const SETTINGS_KEYS_PATH =
-  '/api/settings?keys=is_send_task,is_send_fruitorder,is_send_farmgiftorder,is_send_mailgiftorder,is_send_guestbookorder,is_send_bufftimorder,is_send_buffsaoorder,is_send_weatherbufforder,min_coin_per_fruit,max_coin_for_fruit_order,max_fruits_per_customer_per_day,is_buff_sao_custom_quantity,is_buff_tim_custom_quantity';
+  '/api/settings?keys=is_send_task,is_send_fruitorder,is_send_farmgiftorder,is_send_mailgiftorder,is_send_guestbookorder,is_send_bufftimorder,is_send_buffluotxemorder,is_send_buffsaoorder,is_send_weatherbufforder,min_coin_per_fruit,max_coin_for_fruit_order,max_fruits_per_customer_per_day,is_buff_sao_custom_quantity,is_buff_tim_custom_quantity';
 
 const VALID_CATALOG_SCOPES = new Set([
   'fruit_coin',
@@ -1923,6 +1935,7 @@ const VALID_CATALOG_SCOPES = new Set([
   'summary',
   'admin_summary',
   'buff_tim',
+  'buff_luot_xem',
   'buff_sao',
   'guestbook',
   'farm_gift',
@@ -1941,6 +1954,7 @@ function ensureRawCatalogShell() {
       fruitStock: [],
       fruitStockMeta: {},
       buffTimPackages: [],
+      buffLuotXemPackages: [],
       buffSaoPackages: [],
       guestbookPackages: [],
       farmGifts: [],
@@ -1990,6 +2004,9 @@ async function fetchScopedCatalogFromHoanNguyen(scope, { force = true, maxAgeMs 
     if (scope === 'buff_tim') {
       reqs.buffTim = hnApiCall('/api/buff-tim-price-packages?active=1', 'GET', null, true, timeoutMs).catch(error => ({ upstreamError: error }));
     }
+    if (scope === 'buff_luot_xem') {
+      reqs.buffLuotXem = hnApiCall('/api/buff-luot-xem-price-packages?active=1', 'GET', null, true, timeoutMs).catch(error => ({ upstreamError: error }));
+    }
     if (scope === 'buff_sao') {
       reqs.buffSao = hnApiCall('/api/buff-sao-price-packages?active=1', 'GET', null, true, timeoutMs).catch(error => ({ upstreamError: error }));
     }
@@ -2026,6 +2043,7 @@ async function fetchScopedCatalogFromHoanNguyen(scope, { force = true, maxAgeMs 
       raw.fruitStockMeta = results.fruitStock.meta || raw.fruitStockMeta || {};
     }
     if (results.buffTim) raw.buffTimPackages = Array.isArray(results.buffTim.data) ? results.buffTim.data : [];
+    if (results.buffLuotXem) raw.buffLuotXemPackages = Array.isArray(results.buffLuotXem.data) ? results.buffLuotXem.data : [];
     if (results.buffSao) raw.buffSaoPackages = Array.isArray(results.buffSao.data) ? results.buffSao.data : [];
     if (results.guestbook) raw.guestbookPackages = Array.isArray(results.guestbook.data) ? results.guestbook.data : [];
     if (results.farmGifts) raw.farmGifts = Array.isArray(results.farmGifts.data) ? results.farmGifts.data : [];
@@ -2085,6 +2103,7 @@ async function buildRawCatalogFromHoanNguyen(force = false, opts = {}) {
     fruitItemsRes,
     fruitStockRes,
     buffTimRes,
+    buffLuotXemRes,
     buffSaoRes,
     guestbookRes,
     farmGiftsRes,
@@ -2099,6 +2118,7 @@ async function buildRawCatalogFromHoanNguyen(force = false, opts = {}) {
     hnApiCall('/api/fruit-items?active=1', 'GET', null, true, timeoutMs).catch(error => ({ upstreamError: error })),
     hnApiCall('/api/fruit-stock', 'GET', null, true, timeoutMs).catch(() => ({ data: [], meta: {} })),
     hnApiCall('/api/buff-tim-price-packages?active=1', 'GET', null, true, timeoutMs).catch(() => ({ data: [] })),
+    hnApiCall('/api/buff-luot-xem-price-packages?active=1', 'GET', null, true, timeoutMs).catch(() => ({ data: [] })),
     hnApiCall('/api/buff-sao-price-packages?active=1', 'GET', null, true, timeoutMs).catch(() => ({ data: [] })),
     hnApiCall('/api/guestbook-price-packages?active=1', 'GET', null, true, timeoutMs).catch(() => ({ data: [] })),
     // IMPORTANT: Only fetch active=1 gifts for seller order creation, matching HoanNguyen exactly!
@@ -2125,6 +2145,7 @@ async function buildRawCatalogFromHoanNguyen(force = false, opts = {}) {
     fruitStock: Array.isArray(fruitStockRes?.data) ? fruitStockRes.data : [],
     fruitStockMeta: fruitStockRes?.meta || {},
     buffTimPackages: Array.isArray(buffTimRes?.data) ? buffTimRes.data : [],
+    buffLuotXemPackages: Array.isArray(buffLuotXemRes?.data) ? buffLuotXemRes.data : [],
     buffSaoPackages: Array.isArray(buffSaoRes?.data) ? buffSaoRes.data : [],
     guestbookPackages: Array.isArray(guestbookRes?.data) ? guestbookRes.data : [],
     farmGifts: Array.isArray(farmGiftsRes?.data) ? farmGiftsRes.data : [],
@@ -2295,6 +2316,7 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
       mail_gift: isSendTask && enabled(raw.hnSettings?.is_send_mailgiftorder),
       guestbook: isSendTask && enabled(raw.hnSettings?.is_send_guestbookorder),
       buff_tim: isSendTask && enabled(raw.hnSettings?.is_send_bufftimorder),
+      buff_luot_xem: isSendTask && enabled(raw.hnSettings?.is_send_buffluotxemorder),
       buff_sao: isSendTask && enabled(raw.hnSettings?.is_send_buffsaoorder),
       weather_buff: isSendTask && weatherAllowed,
       fruit_coin: isSendTask && enabled(raw.hnSettings?.is_send_fruitorder),
@@ -2404,6 +2426,9 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
     if (want('buff_tim')) {
       catalog.buff_tim = raw.buffTimPackages.map((pkg) => buildPublicPackage(pkg, 'buff_tim', isAdmin, 0, productPrices));
     }
+    if (want('buff_luot_xem')) {
+      catalog.buff_luot_xem = raw.buffLuotXemPackages.map(pkg => buildPublicPackage(pkg, 'buff_luot_xem', isAdmin, 0, productPrices));
+    }
     if (want('buff_sao')) {
       catalog.buff_sao = raw.buffSaoPackages.map((pkg) => buildPublicPackage(pkg, 'buff_sao', isAdmin, 0, productPrices));
     }
@@ -2497,7 +2522,7 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
       if (isAdmin && req.query.pricingTab === 'packages') {
         const packages = [];
         const counts = {};
-        for (const key of ['fruit_coin','buff_tim','buff_sao','guestbook','weather_buff','farm_gift','mail_gift']) {
+        for (const key of ['fruit_coin','buff_tim','buff_luot_xem','buff_sao','guestbook','weather_buff','farm_gift','mail_gift']) {
           const rows = catalog[key] || [];
           const grouped = key === 'farm_gift' || key === 'mail_gift';
           let count = 0;
@@ -3150,6 +3175,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     let sellPrice = 0;
     let orderSummary = '';
     let selectedWeatherPkg = null;
+    let profileViewQuantity;
 
     if (category === 'fruit_coin') {
       apiPath = '/api/fruit-coin-orders';
@@ -3244,6 +3270,25 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
         is_active: true,
         expect_sale: !!useSale,
         expect_package_sale_id: useSale ? Number(sale.id) : null,
+        confirm_duplicate_customer: !!confirm_duplicate_customer,
+      };
+    } else if (category === 'buff_luot_xem') {
+      apiPath = CATEGORY_METADATA[category].apiOrderPath;
+      const pkg = rawCatalog.buffLuotXemPackages.find(p => Number(p.id) === Number(price_package_id));
+      if (!pkg || !enabled(pkg.is_active) || !validMoney(Number(pkg.total_price), false) ||
+          !Number.isSafeInteger(Number(pkg.quantity)) || Number(pkg.quantity) <= 0) {
+        return res.status(400).json({ success: false, message: 'Gói lượt xem hồ sơ không hợp lệ.' });
+      }
+      const quote = buildPublicPackage(pkg, category, true, 0, user.productPrices);
+      costPrice = quote._admin.cost_effective;
+      sellPrice = quote.total_price;
+      profileViewQuantity = quote.quantity;
+      orderSummary = `Gói ${profileViewQuantity.toLocaleString('vi-VN')} lượt xem hồ sơ`;
+      hnPayload = {
+        customer_id: Number(customer_id),
+        game_profile_id: game_profile_id ? Number(game_profile_id) : undefined,
+        price_package_id: quote.id,
+        is_active: true,
         confirm_duplicate_customer: !!confirm_duplicate_customer,
       };
     } else if (category === 'buff_sao') {
@@ -3466,7 +3511,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
       },
       status: createdRemoteOrder.status || 'pending',
       isActive: createdRemoteOrder.is_active ?? (isWeatherBuff ? false : true),
-      totalCnt: createdRemoteOrder.total_cnt ?? createdRemoteOrder.package_quantity ?? hnPayload.total_cnt ?? (selectedWeatherPkg?.quantity || 0),
+      totalCnt: createdRemoteOrder.total_cnt ?? createdRemoteOrder.package_quantity ?? hnPayload.total_cnt ?? profileViewQuantity ?? (selectedWeatherPkg?.quantity || 0),
       sendingCnt: createdRemoteOrder.sending_cnt ?? 0,
       completedCnt: createdRemoteOrder.completed_cnt ?? 0,
       failedCnt: createdRemoteOrder.failed_cnt ?? 0,
@@ -3533,6 +3578,8 @@ const orderPaths = [
   '/api/mail-gift-orders?page=1&per_page=25',
   '/api/weather-buff-orders?page=1&per_page=25&status_group=active&include_summary=1',
   '/api/weather-buff-orders?page=1&per_page=15&status_group=completed',
+  '/api/buff-luot-xem-orders?page=1&per_page=25&status_group=active&include_summary=1',
+  '/api/buff-luot-xem-orders?page=1&per_page=15&status_group=completed',
 ];
 
 const ORDER_FRESH_MS = 15000;
@@ -3568,8 +3615,8 @@ async function fetchRemoteOrderPages(cache) {
   return cache.result;
 }
 
-const orderCategories = ['fruit_all','fruit_all','buff_tim','buff_tim','buff_sao','buff_sao','guestbook','farm_gift','mail_gift','weather_buff','weather_buff'];
-const orderPathGroups = ['active','completed','active','completed','active','completed','both','both','both','active','completed'];
+const orderCategories = ['fruit_all','fruit_all','buff_tim','buff_tim','buff_sao','buff_sao','guestbook','farm_gift','mail_gift','weather_buff','weather_buff','buff_luot_xem','buff_luot_xem'];
+const orderPathGroups = ['active','completed','active','completed','active','completed','both','both','both','active','completed','active','completed'];
 
 // Keep only source pages actually requested. Page N is read on demand, and
 // shared across clients. Clearing orderCache after a mutation also invalidates these pages.
@@ -3704,6 +3751,8 @@ app.get('/api/orders', requireAuth, async (req, res) => {
       mailGiftRes,
       weatherRes,
       weatherCompRes,
+      viewsActiveRes,
+      viewsCompRes,
     ] = remote.pages;
 
     const remoteMap = new Map();
@@ -3727,6 +3776,8 @@ app.get('/api/orders', requireAuth, async (req, res) => {
     collectRemote(mailGiftRes, 'mail_gift');
     collectRemote(weatherRes, 'weather_buff');
     collectRemote(weatherCompRes, 'weather_buff');
+    collectRemote(viewsActiveRes, 'buff_luot_xem');
+    collectRemote(viewsCompRes, 'buff_luot_xem');
 
     const matchedRemoteKeys = new Set();
     for (const lo of db.localOrders) {
@@ -3824,6 +3875,8 @@ app.get('/api/orders', requireAuth, async (req, res) => {
           summary = `Buff ${Number(rem.total_cnt || 0).toLocaleString('vi-VN')} Tim`;
         } else if (cat === 'buff_sao') {
           summary = `Buff ${Number(rem.total_cnt || 0).toLocaleString('vi-VN')} Sao`;
+        } else if (cat === 'buff_luot_xem') {
+          summary = `Gói ${Number(rem.total_cnt || 0).toLocaleString('vi-VN')} lượt xem hồ sơ`;
         } else if (cat === 'guestbook') {
           summary = `Bài viết: "${String(rem.guest_book_message || '').slice(0, 28)}"`;
         } else if (cat === 'weather_buff') {
@@ -3915,6 +3968,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
             fruit_coin: fruitActiveRes?.summary || fruitActiveRes?.data?.summary || null,
             buff_tim: timActiveRes?.summary || timActiveRes?.data?.summary || null,
             buff_sao: saoActiveRes?.summary || saoActiveRes?.data?.summary || null,
+            buff_luot_xem: viewsActiveRes?.summary || viewsActiveRes?.data?.summary || null,
             weather_buff: weatherRes?.summary || weatherRes?.data?.summary || null,
           }
         : undefined,
@@ -4985,7 +5039,7 @@ app.put(['/api/admin/settings', '/api/admin/ctv/:id/pricing'], requireAdmin, asy
     const upstreamEmail = sourceEmail !== undefined ? sourceEmail : hoanNguyenEmail;
     const upstreamPassword = sourcePassword !== undefined ? sourcePassword : hoanNguyenPassword;
 
-    const catKeyPattern = /^(fruit_coin|fruit_by_fruit|buff_tim|buff_sao|guestbook|farm_gift|mail_gift|weather_buff)$/;
+    const catKeyPattern = /^(fruit_coin|fruit_by_fruit|buff_tim|buff_luot_xem|buff_sao|guestbook|farm_gift|mail_gift|weather_buff)$/;
     for (const value of [defaultMarkup, defaultFruitUnitMarkup]) {
       if (value !== undefined && !validMoney(value)) throw new Error('Mức cộng giá phải là số nguyên không âm và hữu hạn.');
     }
@@ -5016,7 +5070,7 @@ app.put(['/api/admin/settings', '/api/admin/ctv/:id/pricing'], requireAdmin, asy
     }
     for (const [label, values, keyPattern] of [
       ['categoryMarkups', categoryMarkups, catKeyPattern],
-      ['packagePriceOverrides', packagePriceOverrides, /^(fruit_coin|buff_tim|buff_sao|guestbook|farm_gift|mail_gift|weather_buff):[1-9]\d*$/],
+      ['packagePriceOverrides', packagePriceOverrides, /^(fruit_coin|buff_tim|buff_luot_xem|buff_sao|guestbook|farm_gift|mail_gift|weather_buff):[1-9]\d*$/],
       ['fruitUnitPrices', fruitUnitPrices, /^[1-9]\d*$/],
       ['fruitMutationPrices', fruitMutationPrices, /^[1-9]\d*:(?:[1-9]|1\d)$/],
     ]) {
